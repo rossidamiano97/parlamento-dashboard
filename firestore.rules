@@ -1,0 +1,23 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Notizie: lettura pubblica, scrittura solo da service account (Admin SDK bypassa queste regole)
+    match /notizie/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Metadata di sistema: lettura pubblica
+    match /meta/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Tutto il resto: nessun accesso
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
