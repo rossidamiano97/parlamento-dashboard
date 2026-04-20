@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parlamento Italiano — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700;900&family=Josefin+Sans:ital,wght@0,300;0,400;0,600;1,300&display=swap" rel="stylesheet">
+  <style>
+    /* ── VARIABILI ── */
+    :root {
+      --bg:         #0b0f18;
+      --surface:    #111827;
+      --surface2:   #1a2540;
+      --border:     rgba(201, 168, 76, 0.18);
+      --border-hov: rgba(201, 168, 76, 0.5);
+      --gold:       #c9a84c;
+      --gold-dim:   #8a6f2e;
+      --text:       #e8e2d5;
+      --text-dim:   #7a7264;
+      --text-mid:   #a89c8a;
+      --cam-col:    #3a7fd4;
+      --cam-dark:   #1a3a6b;
+      --sen-col:    #d44a4a;
+      --sen-dark:   #6b1a1a;
+      --badge-seduta:      rgba(58,127,212,.18);
+      --badge-atto:        rgba(201,168,76,.15);
+      --badge-votazione:   rgba(212,74,74,.18);
+      --badge-comunicato:  rgba(60,180,120,.15);
+      --badge-commissione: rgba(160,80,200,.15);
+      --badge-legge:       rgba(201,168,76,.2);
+      --badge-mozione:     rgba(240,140,40,.15);
+      --badge-interpellanza: rgba(80,160,200,.15);
+    }
+
+    /* ── RESET ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 16px; scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Josefin Sans', sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Grain overlay */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none; z-index: 9999; opacity: .4;
+    }
+
+    /* ── HEADER ── */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      position: sticky; top: 0;
+      background: rgba(11,15,24,.92);
+      backdrop-filter: blur(16px);
+      z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 64px;
+    }
+    .logo {
+      font-family: 'Cinzel', serif;
+      font-size: .82rem;
+      letter-spacing: .18em;
+      color: var(--gold);
+      text-transform: uppercase;
+      display: flex; align-items: center; gap: .6rem;
+    }
+    .logo-flag { display: flex; gap: 2px; }
+    .logo-flag span {
+      width: 4px; height: 16px; border-radius: 1px;
+    }
+    .flag-g { background: #009246; }
+    .flag-w { background: #f1f2f1; }
+    .flag-r { background: #ce2b37; }
+
+    .last-update {
+      font-size: .7rem;
+      color: var(--text-dim);
+      letter-spacing: .08em;
+    }
+    .last-update span { color: var(--gold-dim); }
+
+    /* ── BREADCRUMB ── */
+    .breadcrumb {
+      padding: .75rem 2rem;
+      font-size: .72rem;
+      letter-spacing: .12em;
+      color: var(--text-dim);
+      display: flex; align-items: center; gap: .5rem;
+      border-bottom: 1px solid rgba(255,255,255,.04);
+    }
+    .breadcrumb a {
+      color: var(--gold-dim);
+      text-decoration: none;
+      text-transform: uppercase;
+      transition: color .2s;
+      cursor: pointer;
+    }
+    .breadcrumb a:hover { color: var(--gold); }
+    .breadcrumb .sep { opacity: .3; }
+    .breadcrumb .current { color: var(--text-mid); text-transform: uppercase; }
+
+    /* ── MAIN ── */
+    main { max-width: 1100px; margin: 0 auto; padding: 2.5rem 2rem 4rem; }
+
+    /* ── HOME: SELEZIONE RAMO ── */
+    .home-intro {
+      text-align: center;
+      margin-bottom: 3rem;
+      animation: fadeUp .6s ease both;
+    }
+    .home-intro h1 {
+      font-family: 'Cinzel', serif;
+      font-size: clamp(1.4rem, 3vw, 2.2rem);
+      font-weight: 600;
+      letter-spacing: .12em;
+      color: var(--text);
+      margin-bottom: .75rem;
+    }
+    .home-intro p {
+      color: var(--text-dim);
+      font-size: .82rem;
+      letter-spacing: .06em;
+    }
+
+    .ramo-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    .ramo-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2.5rem 2rem;
+      cursor: pointer;
+      transition: border-color .25s, transform .25s, box-shadow .25s;
+      position: relative;
+      overflow: hidden;
+      animation: fadeUp .6s ease both;
+      text-align: center;
+    }
+    .ramo-card:nth-child(2) { animation-delay: .1s; }
+    .ramo-card::before {
+      content: '';
+      position: absolute; inset: 0;
+      opacity: 0;
+      transition: opacity .3s;
+    }
+    .ramo-card.cam::before { background: radial-gradient(circle at 50% 0%, rgba(58,127,212,.12), transparent 70%); }
+    .ramo-card.sen::before { background: radial-gradient(circle at 50% 0%, rgba(212,74,74,.12), transparent 70%); }
+    .ramo-card:hover { border-color: var(--border-hov); transform: translateY(-3px); box-shadow: 0 16px 40px rgba(0,0,0,.4); }
+    .ramo-card:hover::before { opacity: 1; }
+
+    .ramo-icon {
+      font-size: 2.4rem;
+      margin-bottom: 1rem;
+      line-height: 1;
+    }
+    .ramo-card h2 {
+      font-family: 'Cinzel', serif;
+      font-size: .92rem;
+      font-weight: 600;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      margin-bottom: .5rem;
+    }
+    .ramo-card.cam h2 { color: var(--cam-col); }
+    .ramo-card.sen h2 { color: var(--sen-col); }
+    .ramo-count {
+      font-size: .72rem;
+      color: var(--text-dim);
+      letter-spacing: .08em;
+      margin-top: .75rem;
+    }
+    .ramo-count strong { color: var(--gold-dim); }
+
+    /* ── VISTA RAMO: FILTRI + LISTA ── */
+    .ramo-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 2rem;
+      animation: fadeUp .4s ease both;
+    }
+    .ramo-header h2 {
+      font-family: 'Cinzel', serif;
+      font-size: 1.1rem;
+      font-weight: 600;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    .ramo-header.cam h2 { color: var(--cam-col); }
+    .ramo-header.sen h2 { color: var(--sen-col); }
+
+    .filter-bar {
+      display: flex; gap: .5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.75rem;
+      animation: fadeUp .4s ease .1s both;
+    }
+    .filter-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-mid);
+      padding: .35rem .9rem;
+      border-radius: 2px;
+      font-family: 'Josefin Sans', sans-serif;
+      font-size: .72rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all .2s;
+    }
+    .filter-btn:hover { border-color: var(--border-hov); color: var(--text); }
+    .filter-btn.active {
+      background: var(--surface2);
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+
+    /* ── CARDS NOTIZIE ── */
+    .items-grid { display: flex; flex-direction: column; gap: .75rem; }
+
+    .news-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1.25rem 1.5rem;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: start;
+      gap: 1rem;
+      transition: border-color .2s, transform .15s;
+      animation: fadeUp .4s ease both;
+      text-decoration: none;
+      color: inherit;
+    }
+    .news-card:hover {
+      border-color: var(--border-hov);
+      transform: translateX(4px);
+    }
+
+    .card-left {}
+    .card-top {
+      display: flex; align-items: center; gap: .6rem;
+      margin-bottom: .5rem;
+    }
+    .tipo-badge {
+      font-size: .62rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      padding: .2rem .55rem;
+      border-radius: 2px;
+      font-weight: 600;
+    }
+    .badge-seduta      { background: var(--badge-seduta);      color: var(--cam-col); }
+    .badge-votazione   { background: var(--badge-votazione);   color: var(--sen-col); }
+    .badge-atto        { background: var(--badge-atto);        color: var(--gold); }
+    .badge-legge       { background: var(--badge-legge);       color: #e0b84a; }
+    .badge-mozione     { background: var(--badge-mozione);     color: #f08828; }
+    .badge-proposta    { background: var(--badge-atto);        color: var(--gold); }
+    .badge-interpellanza { background: var(--badge-interpellanza); color: #50a0c8; }
+    .badge-interrogazione { background: var(--badge-interpellanza); color: #50a0c8; }
+    .badge-comunicato  { background: var(--badge-comunicato);  color: #3cb478; }
+    .badge-commissione { background: var(--badge-commissione); color: #a050c8; }
+    .badge-risoluzione { background: var(--badge-atto);        color: var(--gold); }
+
+    .card-date {
+      font-size: .68rem;
+      color: var(--text-dim);
+      letter-spacing: .06em;
+    }
+    .news-card h3 {
+      font-family: 'Josefin Sans', sans-serif;
+      font-size: .9rem;
+      font-weight: 400;
+      line-height: 1.5;
+      color: var(--text);
+      margin-bottom: .35rem;
+    }
+    .card-desc {
+      font-size: .75rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+      letter-spacing: .02em;
+    }
+    .card-link {
+      align-self: center;
+      color: var(--gold-dim);
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      transition: color .2s;
+    }
+    .news-card:hover .card-link { color: var(--gold); }
+
+    /* ── LOADING / EMPTY / ERROR ── */
+    .state-msg {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-dim);
+      font-size: .8rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      animation: fadeUp .4s ease both;
+    }
+    .state-msg .spinner {
+      width: 28px; height: 28px;
+      border: 2px solid var(--border);
+      border-top-color: var(--gold);
+      border-radius: 50%;
+      margin: 0 auto 1rem;
+      animation: spin 1s linear infinite;
+    }
+
+    /* ── DIVIDER DECORATIVO ── */
+    .section-divider {
+      display: flex; align-items: center; gap: 1rem;
+      margin-bottom: 1.5rem;
+      animation: fadeUp .4s ease both;
+    }
+    .section-divider span {
+      font-family: 'Cinzel', serif;
+      font-size: .65rem;
+      letter-spacing: .2em;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .section-divider::before,
+    .section-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ── ANIMATIONS ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 600px) {
+      .ramo-grid { grid-template-columns: 1fr; }
+      main { padding: 1.5rem 1rem 3rem; }
+      .ramo-header { flex-direction: column; align-items: flex-start; gap: .5rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-flag">
+      <span class="flag-g"></span>
+      <span class="flag-w"></span>
+      <span class="flag-r"></span>
+    </div>
+    Parlamento Italiano — Dashboard
+  </div>
+  <div class="last-update" id="lastUpdate">Caricamento...</div>
+</header>
+
+<div class="breadcrumb" id="breadcrumb">
+  <span class="current">Nazionale</span>
+</div>
+
+<main id="app">
+  <div class="state-msg"><div class="spinner"></div>Connessione al database...</div>
+</main>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     FIREBASE CONFIG
+     Sostituisci i valori sotto con quelli del tuo progetto Firebase.
+     Trovi questi valori su: Firebase Console → Impostazioni progetto → App web
+     ══════════════════════════════════════════════════════════════════════════ -->
+<script type="module">
+  import { initializeApp }      from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getFirestore, collection, query, where, orderBy, limit, getDocs, doc, getDoc }
+    from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  // ▼▼▼ INCOLLA QUI LA TUA CONFIG FIREBASE ▼▼▼
+  const firebaseConfig = {
+    apiKey:            "INSERISCI_API_KEY",
+    authDomain:        "INSERISCI_PROJECT_ID.firebaseapp.com",
+    projectId:         "INSERISCI_PROJECT_ID",
+    storageBucket:     "INSERISCI_PROJECT_ID.appspot.com",
+    messagingSenderId: "INSERISCI_SENDER_ID",
+    appId:             "INSERISCI_APP_ID",
+  };
+  // ▲▲▲ FINE CONFIG ▲▲▲
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  // ── STATO APP ──────────────────────────────────────────────────────────────
+  let state = {
+    view:        'home',   // 'home' | 'camera' | 'senato'
+    filtroTipo:  'tutti',
+    items:       [],
+    counts:      { camera: 0, senato: 0 },
+    loading:     false,
+  };
+
+  const TIPI_CAMERA = ['tutti','seduta','votazione','legge','proposta','mozione','interpellanza','interrogazione','risoluzione','atto'];
+  const TIPI_SENATO = ['tutti','comunicato','commissione','seduta'];
+
+  // ── HELPERS ────────────────────────────────────────────────────────────────
+
+  function formatDate(ts) {
+    if (!ts) return '—';
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    return d.toLocaleDateString('it-IT', { day:'2-digit', month:'short', year:'numeric' });
+  }
+
+  function badgeClass(tipo) {
+    const map = {
+      seduta:'badge-seduta', votazione:'badge-votazione',
+      atto:'badge-atto', legge:'badge-legge', proposta:'badge-proposta',
+      mozione:'badge-mozione', interpellanza:'badge-interpellanza',
+      interrogazione:'badge-interrogazione', risoluzione:'badge-risoluzione',
+      comunicato:'badge-comunicato', commissione:'badge-commissione',
+    };
+    return map[tipo] || 'badge-atto';
+  }
+
+  function tipoLabel(tipo) {
+    const map = {
+      seduta:'Seduta', votazione:'Votazione', atto:'Atto', legge:'Legge',
+      proposta:'PDL', mozione:'Mozione', interpellanza:'Interpellanza',
+      interrogazione:'Interrogazione', risoluzione:'Risoluzione',
+      comunicato:'Comunicato', commissione:'Commissione',
+    };
+    return map[tipo] || tipo;
+  }
+
+  // ── FIREBASE QUERIES ───────────────────────────────────────────────────────
+
+  async function loadCounts() {
+    try {
+      const snap = await getDoc(doc(db, 'meta', 'status'));
+      if (snap.exists()) {
+        const d = snap.data();
+        const lu = d.lastUpdated?.toDate();
+        if (lu) {
+          document.getElementById('lastUpdate').innerHTML =
+            `Aggiornato: <span>${lu.toLocaleString('it-IT', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}</span>`;
+        }
+      }
+    } catch(e) { console.warn('meta:', e.message); }
+
+    // Conta per Camera e Senato
+    for (const fonte of ['camera','senato']) {
+      try {
+        const q = query(collection(db,'notizie'), where('fonte','==',fonte), limit(1));
+        await getDocs(q); // Solo verifica connessione
+        const qAll = query(collection(db,'notizie'), where('fonte','==',fonte), limit(200));
+        const s = await getDocs(qAll);
+        state.counts[fonte] = s.size;
+      } catch(e) { console.warn(`count ${fonte}:`, e.message); }
+    }
+  }
+
+  async function loadItems(fonte, tipo) {
+    state.loading = true;
+    renderApp();
+    try {
+      const constraints = [
+        where('fonte','==', fonte),
+        orderBy('data','desc'),
+        limit(80),
+      ];
+      if (tipo && tipo !== 'tutti') {
+        constraints.splice(1, 0, where('tipo','==', tipo));
+      }
+      const q = query(collection(db,'notizie'), ...constraints);
+      const snap = await getDocs(q);
+      state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch(e) {
+      console.error('loadItems:', e.message);
+      state.items = [];
+    }
+    state.loading = false;
+    renderApp();
+  }
+
+  // ── NAVIGAZIONE ───────────────────────────────────────────────────────────
+
+  function navigate(view, tipo) {
+    state.view = view;
+    state.filtroTipo = tipo || 'tutti';
+    state.items = [];
+    updateBreadcrumb();
+    if (view === 'home') {
+      renderApp();
+    } else {
+      loadItems(view, state.filtroTipo);
+    }
+  }
+
+  function setFiltro(tipo) {
+    state.filtroTipo = tipo;
+    loadItems(state.view, tipo);
+  }
+
+  function updateBreadcrumb() {
+    const bc = document.getElementById('breadcrumb');
+    if (state.view === 'home') {
+      bc.innerHTML = `<span class="current">Nazionale</span>`;
+    } else {
+      const label = state.view === 'camera' ? 'Camera dei Deputati' : 'Senato della Repubblica';
+      bc.innerHTML = `
+        <a onclick="window.goHome()">Nazionale</a>
+        <span class="sep">›</span>
+        <span class="current">${label}</span>
+      `;
+    }
+  }
+
+  window.goHome = () => navigate('home');
+  window.goTo   = (v) => navigate(v);
+  window.setFiltro = (t) => setFiltro(t);
+
+  // ── RENDER ─────────────────────────────────────────────────────────────────
+
+  function renderApp() {
+    const app = document.getElementById('app');
+    if (state.view === 'home') {
+      app.innerHTML = renderHome();
+    } else {
+      app.innerHTML = renderRamo();
+    }
+  }
+
+  function renderHome() {
+    return `
+      <div class="home-intro">
+        <h1>Lavori Parlamentari</h1>
+        <p>Seleziona il ramo del Parlamento per esplorare gli atti recenti</p>
+      </div>
+      <div class="ramo-grid">
+        <div class="ramo-card cam" onclick="goTo('camera')">
+          <div class="ramo-icon">🏛</div>
+          <h2>Camera dei Deputati</h2>
+          <p style="font-size:.75rem;color:var(--text-mid);letter-spacing:.05em;margin-top:.25rem;">
+            Atti · Sedute · Votazioni · Proposte
+          </p>
+          <div class="ramo-count">
+            <strong>${state.counts.camera || '—'}</strong> elementi recenti
+          </div>
+        </div>
+        <div class="ramo-card sen" onclick="goTo('senato')">
+          <div class="ramo-icon">⚖️</div>
+          <h2>Senato della Repubblica</h2>
+          <p style="font-size:.75rem;color:var(--text-mid);letter-spacing:.05em;margin-top:.25rem;">
+            Comunicati · Commissioni · Sedute
+          </p>
+          <div class="ramo-count">
+            <strong>${state.counts.senato || '—'}</strong> elementi recenti
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderRamo() {
+    const isCamera = state.view === 'camera';
+    const label = isCamera ? 'Camera dei Deputati' : 'Senato della Repubblica';
+    const colClass = isCamera ? 'cam' : 'sen';
+    const tipi = isCamera ? TIPI_CAMERA : TIPI_SENATO;
+
+    const filtroBtns = tipi.map(t =>
+      `<button class="filter-btn ${state.filtroTipo===t?'active':''}" onclick="setFiltro('${t}')">
+        ${t === 'tutti' ? 'Tutti' : tipoLabel(t)}
+      </button>`
+    ).join('');
+
+    let itemsHTML;
+    if (state.loading) {
+      itemsHTML = `<div class="state-msg"><div class="spinner"></div>Caricamento...</div>`;
+    } else if (!state.items.length) {
+      itemsHTML = `<div class="state-msg">Nessun elemento trovato per questo filtro</div>`;
+    } else {
+      itemsHTML = `<div class="items-grid">
+        ${state.items.map((item, i) => renderCard(item, i)).join('')}
+      </div>`;
+    }
+
+    return `
+      <div class="ramo-header ${colClass}">
+        <h2>${label}</h2>
+        <div style="font-size:.7rem;color:var(--text-dim);letter-spacing:.06em;">
+          ${state.items.length ? state.items.length + ' elementi' : ''}
+        </div>
+      </div>
+      <div class="section-divider"><span>Filtra per tipo</span></div>
+      <div class="filter-bar">${filtroBtns}</div>
+      ${itemsHTML}
+    `;
+  }
+
+  function renderCard(item, i) {
+    const delay = Math.min(i * 40, 400);
+    const title = item.titolo || 'Nessun titolo';
+    const date  = formatDate(item.data);
+    const desc  = item.descrizione || '';
+    const link  = item.link || '#';
+    const tipo  = item.tipo || 'atto';
+
+    return `
+      <a class="news-card" href="${link}" target="_blank" rel="noopener"
+         style="animation-delay:${delay}ms">
+        <div class="card-left">
+          <div class="card-top">
+            <span class="tipo-badge ${badgeClass(tipo)}">${tipoLabel(tipo)}</span>
+            <span class="card-date">${date}</span>
+          </div>
+          <h3>${title}</h3>
+          ${desc ? `<p class="card-desc">${desc}</p>` : ''}
+        </div>
+        <div class="card-link">↗</div>
+      </a>
+    `;
+  }
+
+  // ── INIT ───────────────────────────────────────────────────────────────────
+  (async () => {
+    renderApp();
+    await loadCounts();
+    renderApp();
+  })();
+</script>
+</body>
+</html>
