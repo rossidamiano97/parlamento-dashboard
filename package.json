@@ -1,0 +1,13 @@
+{
+  "name": "parlamento-dashboard",
+  "version": "1.0.0",
+  "description": "Dashboard aggiornata automaticamente sui lavori del Parlamento Italiano",
+  "type": "module",
+  "scripts": {
+    "fetch": "node scripts/fetch-data.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.3.0",
+    "xml2js": "^0.6.2"
+  }
+}
