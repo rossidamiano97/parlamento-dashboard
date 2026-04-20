@@ -1,28 +1,17 @@
 /**
- * fetch-data.js
- * Raccoglie dati da Camera dei Deputati e Senato della Repubblica
- * e li salva su Firebase Firestore.
- *
- * Fonti:
- *  - Camera: SPARQL endpoint ufficiale su dati.camera.it
- *  - Senato: RSS/XML feed ufficiali + HTML parsing sedute
+ * fetch-data.js — versione 2
+ * Strategie multiple con fallback per Camera e Senato.
  */
 
 import admin from 'firebase-admin';
 import { parseStringPromise } from 'xml2js';
 
-// ─── FIREBASE INIT ──────────────────────────────────────────────────────────
-
+// ─── FIREBASE INIT ───────────────────────────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
-// ─── HELPERS ────────────────────────────────────────────────────────────────
-
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
 async function fetchURL(url, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
@@ -31,201 +20,188 @@ async function fetchURL(url, options = {}) {
       ...options,
       signal: controller.signal,
       headers: {
-        'User-Agent': 'ParlamentoDashboard/1.0 (github.com/tuo-user/parlamento-dashboard)',
-        'Accept': 'application/json, application/sparql-results+json, application/xml, text/xml, */*',
+        'User-Agent': 'Mozilla/5.0 (compatible; ParlamentoDashboard/2.0)',
+        'Accept': 'application/json, application/xml, text/xml, text/html, */*',
         ...options.headers,
       },
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status} per ${url}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.text();
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function getDateNDaysAgo(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().split('T')[0]; // YYYY-MM-DD
-}
-
-function parseItalianDate(str) {
-  if (!str) return new Date();
-  // Gestisce formati: ISO, DD/MM/YYYY, e varianti
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return new Date(str);
-  const [d, m, y] = str.split('/');
-  if (d && m && y) return new Date(`${y}-${m}-${d}`);
-  return new Date(str);
-}
-
 function slugify(str) {
-  return (str || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '')
-    .slice(0, 80);
+  return (str || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 80);
 }
 
-// Salva un array di notizie su Firestore (batch, deduplicando per id)
+function parseDate(str) {
+  if (!str) return new Date();
+  // ISO format
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return new Date(str);
+  // RFC 822 (RSS)
+  const d = new Date(str);
+  if (!isNaN(d)) return d;
+  // DD/MM/YYYY
+  const parts = str.split('/');
+  if (parts.length === 3) return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+  return new Date();
+}
+
 async function saveToFirestore(items) {
-  if (!items.length) return;
+  if (!items.length) { console.log('  → Nessun elemento da salvare.'); return; }
+  const unique = [...new Map(items.map(i => [i.id, i])).values()];
   const batchSize = 400;
-  for (let i = 0; i < items.length; i += batchSize) {
+  for (let i = 0; i < unique.length; i += batchSize) {
     const batch = db.batch();
-    items.slice(i, i + batchSize).forEach((item) => {
-      const docRef = db.collection('notizie').doc(item.id);
-      batch.set(docRef, item, { merge: true });
+    unique.slice(i, i + batchSize).forEach(item => {
+      batch.set(db.collection('notizie').doc(item.id), item, { merge: true });
     });
     await batch.commit();
   }
-  console.log(`  ✓ Salvati ${items.length} elementi su Firestore`);
+  console.log(`  ✓ Salvati ${unique.length} elementi`);
+  return unique.length;
 }
 
-// ─── CAMERA DEI DEPUTATI ────────────────────────────────────────────────────
+// ─── CAMERA DEI DEPUTATI ─────────────────────────────────────────────────────
 
-async function fetchCameraViaSPARQL() {
-  console.log('📥 Camera: query SPARQL su dati.camera.it...');
+// Strategia 1: SPARQL semplificato (senza filtro data)
+async function fetchCameraSPARQL() {
+  console.log('  📡 Camera: SPARQL endpoint...');
 
-  // Query per lavori parlamentari recenti (ultimi 14 giorni)
-  const since = getDateNDaysAgo(14);
+  const queries = [
+    // Query sedute
+    {
+      tipo: 'seduta',
+      sparql: `PREFIX dc: <http://purl.org/dc/elements/1.1/>
+PREFIX ocd: <https://dati.camera.it/ocd/>
+SELECT DISTINCT ?uri ?titolo ?data WHERE {
+  ?uri a ocd:Seduta ; dc:title ?titolo ; dc:date ?data .
+} ORDER BY DESC(?data) LIMIT 30`,
+    },
+    // Query atti (più generica)
+    {
+      tipo: 'atto',
+      sparql: `PREFIX dc: <http://purl.org/dc/elements/1.1/>
+PREFIX ocd: <https://dati.camera.it/ocd/>
+SELECT DISTINCT ?uri ?titolo ?data WHERE {
+  ?uri a ocd:Atto ; dc:title ?titolo ; dc:date ?data .
+} ORDER BY DESC(?data) LIMIT 30`,
+    },
+    // Query votazioni
+    {
+      tipo: 'votazione',
+      sparql: `PREFIX dc: <http://purl.org/dc/elements/1.1/>
+PREFIX ocd: <https://dati.camera.it/ocd/>
+SELECT DISTINCT ?uri ?titolo ?data WHERE {
+  ?uri a ocd:Votazione ; dc:title ?titolo ; dc:date ?data .
+} ORDER BY DESC(?data) LIMIT 30`,
+    },
+    // Query generica (fallback - prende qualsiasi risorsa con titolo e data)
+    {
+      tipo: 'atto',
+      sparql: `PREFIX dc: <http://purl.org/dc/elements/1.1/>
+SELECT DISTINCT ?uri ?titolo ?data WHERE {
+  ?uri dc:title ?titolo ; dc:date ?data .
+  FILTER(STRSTARTS(STR(?uri), "https://dati.camera.it"))
+} ORDER BY DESC(?data) LIMIT 50`,
+    },
+  ];
 
-  const seduteQuery = encodeURIComponent(`
-    PREFIX ocd: <https://dati.camera.it/ocd/>
-    PREFIX dc: <http://purl.org/dc/elements/1.1/>
-    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-
-    SELECT DISTINCT ?uri ?titolo ?data ?sede WHERE {
-      ?uri a ocd:Seduta .
-      ?uri dc:title ?titolo .
-      ?uri dc:date ?data .
-      OPTIONAL { ?uri ocd:rif_sede ?sede . }
-      FILTER(?data >= "${since}"^^xsd:date)
-    }
-    ORDER BY DESC(?data)
-    LIMIT 50
-  `);
-
-  const attiQuery = encodeURIComponent(`
-    PREFIX ocd: <https://dati.camera.it/ocd/>
-    PREFIX dc: <http://purl.org/dc/elements/1.1/>
-    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-
-    SELECT DISTINCT ?uri ?titolo ?data ?tipo WHERE {
-      ?uri dc:title ?titolo .
-      ?uri dc:date ?data .
-      ?uri a ?tipo .
-      FILTER(?tipo IN (
-        ocd:Atto, ocd:Proposta, ocd:Legge, ocd:Mozione,
-        ocd:Interpellanza, ocd:Interrogazione, ocd:Risoluzione
-      ))
-      FILTER(?data >= "${since}"^^xsd:date)
-    }
-    ORDER BY DESC(?data)
-    LIMIT 50
-  `);
-
-  const sparqlBase = 'https://dati.camera.it/sparql?output=json&query=';
   const results = [];
-
-  // Fetch sedute
-  try {
-    const raw = await fetchURL(sparqlBase + seduteQuery);
-    const json = JSON.parse(raw);
-    const sedute = (json?.results?.bindings || []).map((b) => {
-      const data = parseItalianDate(b.data?.value);
-      const titolo = b.titolo?.value || 'Seduta parlamentare';
-      return {
-        id: `camera-seduta-${slugify(titolo)}-${data.toISOString().split('T')[0]}`,
-        fonte: 'camera',
-        tipo: 'seduta',
-        titolo,
-        data: admin.firestore.Timestamp.fromDate(data),
-        link: b.uri?.value || 'https://www.camera.it',
-        descrizione: b.sede?.value || '',
-        fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
-      };
-    });
-    results.push(...sedute);
-    console.log(`  → ${sedute.length} sedute Camera`);
-  } catch (e) {
-    console.warn('  ⚠ Errore sedute SPARQL Camera:', e.message);
+  for (const q of queries) {
+    try {
+      const url = `https://dati.camera.it/sparql?output=json&query=${encodeURIComponent(q.sparql)}`;
+      const raw = await fetchURL(url, { headers: { Accept: 'application/sparql-results+json' } });
+      const json = JSON.parse(raw);
+      const bindings = json?.results?.bindings || [];
+      console.log(`     → ${bindings.length} risultati (${q.tipo})`);
+      const items = bindings.map(b => {
+        const titolo = b.titolo?.value || 'Atto Camera';
+        const data = parseDate(b.data?.value);
+        return {
+          id: `camera-${q.tipo}-${slugify(titolo)}-${data.toISOString().split('T')[0]}`,
+          fonte: 'camera', tipo: q.tipo, titolo,
+          data: admin.firestore.Timestamp.fromDate(data),
+          link: b.uri?.value || 'https://dati.camera.it',
+          descrizione: '',
+          fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+      });
+      results.push(...items);
+      if (results.length >= 30) break; // abbiamo abbastanza dati
+    } catch (e) {
+      console.warn(`     ⚠ SPARQL (${q.tipo}): ${e.message}`);
+    }
   }
+  return results;
+}
 
-  // Fetch atti
+// Strategia 2: RSS/Atom Camera
+async function fetchCameraRSS() {
+  console.log('  📡 Camera: feed RSS...');
+  const feeds = [
+    { url: 'https://www.camera.it/leg19/rss/lavori.xml', tipo: 'seduta' },
+    { url: 'https://www.camera.it/leg19/rss/notizie.xml', tipo: 'comunicato' },
+    { url: 'https://www.camera.it/rss/leg/lavori.xml', tipo: 'seduta' },
+    { url: 'https://www.camera.it/rss/notizie.xml', tipo: 'comunicato' },
+  ];
+
+  const results = [];
+  for (const feed of feeds) {
+    try {
+      const raw = await fetchURL(feed.url);
+      const parsed = await parseStringPromise(raw, { explicitArray: false });
+      const items = parsed?.rss?.channel?.item || parsed?.feed?.entry || [];
+      const arr = Array.isArray(items) ? items : [items];
+      const notizie = arr.filter(i => i).map(item => {
+        const titolo = String(item.title?._ || item.title || 'Notizia Camera').replace(/<[^>]*>/g, '').trim();
+        const link = item.link?.href || item.link || 'https://www.camera.it';
+        const data = parseDate(item.pubDate || item.updated || item.date || '');
+        return {
+          id: `camera-${feed.tipo}-${slugify(titolo)}-${data.toISOString().split('T')[0]}`,
+          fonte: 'camera', tipo: feed.tipo, titolo,
+          data: admin.firestore.Timestamp.fromDate(data),
+          link: String(link),
+          descrizione: String(item.description?._ || item.description || item.summary || '').replace(/<[^>]*>/g, '').trim().slice(0, 300),
+          fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+      });
+      console.log(`     → ${notizie.length} elementi da ${feed.url}`);
+      results.push(...notizie);
+      if (results.length > 0) break;
+    } catch (e) {
+      console.warn(`     ⚠ Feed Camera (${feed.url}): ${e.message}`);
+    }
+  }
+  return results;
+}
+
+// Strategia 3: Comunicati Camera dal sito ufficiale (JSON/HTML)
+async function fetchCameraComunicati() {
+  console.log('  📡 Camera: comunicati ufficiali...');
   try {
-    const raw = await fetchURL(sparqlBase + attiQuery);
-    const json = JSON.parse(raw);
-    const atti = (json?.results?.bindings || []).map((b) => {
-      const data = parseItalianDate(b.data?.value);
-      const titolo = b.titolo?.value || 'Atto parlamentare';
-      const tipoUri = b.tipo?.value || '';
-      const tipo = tipoUri.includes('Proposta') ? 'proposta' :
-                   tipoUri.includes('Legge') ? 'legge' :
-                   tipoUri.includes('Mozione') ? 'mozione' :
-                   tipoUri.includes('Interpellanza') ? 'interpellanza' :
-                   tipoUri.includes('Interrogazione') ? 'interrogazione' : 'atto';
+    // Camera pubblica comunicati in formato accessibile
+    const raw = await fetchURL('https://www.camera.it/leg19/1445');
+    // Estrai link e titoli dai comunicati (parsing HTML minimale)
+    const links = [...raw.matchAll(/href="([^"]*comunicato[^"]*)"[^>]*>([^<]+)</gi)];
+    const results = links.slice(0, 20).map(match => {
+      const href = match[1].startsWith('http') ? match[1] : `https://www.camera.it${match[1]}`;
+      const titolo = match[2].trim();
       return {
-        id: `camera-atto-${slugify(titolo)}-${data.toISOString().split('T')[0]}`,
-        fonte: 'camera',
-        tipo,
-        titolo,
-        data: admin.firestore.Timestamp.fromDate(data),
-        link: b.uri?.value || 'https://dati.camera.it',
+        id: `camera-comunicato-${slugify(titolo)}`,
+        fonte: 'camera', tipo: 'comunicato', titolo,
+        data: admin.firestore.Timestamp.fromDate(new Date()),
+        link: href,
         descrizione: '',
         fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
     });
-    results.push(...atti);
-    console.log(`  → ${atti.length} atti Camera`);
+    if (results.length > 0) console.log(`     → ${results.length} comunicati Camera`);
+    return results;
   } catch (e) {
-    console.warn('  ⚠ Errore atti SPARQL Camera:', e.message);
-  }
-
-  return results;
-}
-
-// Votazioni Camera — endpoint dedicato su dati.camera.it
-async function fetchCameraVotazioni() {
-  console.log('📥 Camera: votazioni...');
-  const since = getDateNDaysAgo(14);
-
-  const query = encodeURIComponent(`
-    PREFIX ocd: <https://dati.camera.it/ocd/>
-    PREFIX dc: <http://purl.org/dc/elements/1.1/>
-    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-
-    SELECT DISTINCT ?uri ?titolo ?data ?esito WHERE {
-      ?uri a ocd:Votazione .
-      ?uri dc:title ?titolo .
-      ?uri dc:date ?data .
-      OPTIONAL { ?uri ocd:votazione_esito ?esito . }
-      FILTER(?data >= "${since}"^^xsd:date)
-    }
-    ORDER BY DESC(?data)
-    LIMIT 50
-  `);
-
-  try {
-    const raw = await fetchURL(`https://dati.camera.it/sparql?output=json&query=${query}`);
-    const json = JSON.parse(raw);
-    const votazioni = (json?.results?.bindings || []).map((b) => {
-      const data = parseItalianDate(b.data?.value);
-      const titolo = b.titolo?.value || 'Votazione';
-      return {
-        id: `camera-votazione-${slugify(titolo)}-${data.toISOString().split('T')[0]}`,
-        fonte: 'camera',
-        tipo: 'votazione',
-        titolo,
-        data: admin.firestore.Timestamp.fromDate(data),
-        link: b.uri?.value || 'https://dati.camera.it',
-        descrizione: b.esito?.value ? `Esito: ${b.esito.value}` : '',
-        fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
-      };
-    });
-    console.log(`  → ${votazioni.length} votazioni Camera`);
-    return votazioni;
-  } catch (e) {
-    console.warn('  ⚠ Errore votazioni Camera:', e.message);
+    console.warn(`     ⚠ Comunicati Camera: ${e.message}`);
     return [];
   }
 }
@@ -233,111 +209,129 @@ async function fetchCameraVotazioni() {
 // ─── SENATO DELLA REPUBBLICA ─────────────────────────────────────────────────
 
 async function fetchSenatoRSS() {
-  console.log('📥 Senato: RSS comunicati...');
+  console.log('  📡 Senato: RSS feeds...');
 
-  // RSS ufficiali del Senato (verifica su https://www.senato.it/ > RSS)
+  // Molti possibili URL per i feed del Senato — li proviamo tutti
   const feeds = [
-    {
-      url: 'https://www.senato.it/application/xmanager/projects/leg_senato/attachments/rss/rss_comunicati.xml',
-      tipo: 'comunicato',
-    },
-    {
-      url: 'https://www.senato.it/rss/leg/rss_lavori_commissioni.xml',
-      tipo: 'commissione',
-    },
+    { url: 'https://www.senato.it/rss/leg/rss_comunicati.xml', tipo: 'comunicato' },
+    { url: 'https://www.senato.it/rss/comunicati.xml', tipo: 'comunicato' },
+    { url: 'https://www.senato.it/rss.xml', tipo: 'comunicato' },
+    { url: 'https://www.senato.it/rss/notizie.xml', tipo: 'comunicato' },
+    { url: 'https://www.senato.it/leg/19/RSS/rss_comunicati.xml', tipo: 'comunicato' },
+    { url: 'https://www.senato.it/application/xmanager/projects/leg_senato/file/repository/relazioni/RSS/rss_comunicati.xml', tipo: 'comunicato' },
+    { url: 'https://www.senato.it/rss/leg/rss_lavori_commissioni.xml', tipo: 'commissione' },
+    { url: 'https://www.senato.it/rss/commissioni.xml', tipo: 'commissione' },
   ];
 
   const results = [];
-
   for (const feed of feeds) {
     try {
-      const raw = await fetchURL(feed.url, {
-        headers: { Accept: 'application/rss+xml, application/xml, text/xml' },
-      });
+      const raw = await fetchURL(feed.url);
+      if (!raw.includes('<rss') && !raw.includes('<feed') && !raw.includes('<?xml')) continue;
       const parsed = await parseStringPromise(raw, { explicitArray: false });
       const items = parsed?.rss?.channel?.item || parsed?.feed?.entry || [];
       const arr = Array.isArray(items) ? items : [items];
-
-      const notizie = arr.map((item) => {
-        const titolo = item.title?._ || item.title || 'Notizia Senato';
-        const link = item.link?.href || item.link || 'https://www.senato.it';
-        const dataStr = item.pubDate || item.updated || item.date || '';
-        const data = parseItalianDate(dataStr);
-        const descrizione = item.description?._ || item.description || item.summary || '';
-
+      if (!arr.length || !arr[0]) continue;
+      const notizie = arr.filter(i => i).map(item => {
+        const titolo = String(item.title?._ || item.title || 'Notizia Senato').replace(/<[^>]*>/g, '').trim();
+        const link = item.link?.href || (typeof item.link === 'string' ? item.link : '') || 'https://www.senato.it';
+        const data = parseDate(item.pubDate || item.updated || item.date || '');
         return {
           id: `senato-${feed.tipo}-${slugify(titolo)}-${data.toISOString().split('T')[0]}`,
-          fonte: 'senato',
-          tipo: feed.tipo,
-          titolo: String(titolo).replace(/<[^>]*>/g, '').trim(),
+          fonte: 'senato', tipo: feed.tipo, titolo,
           data: admin.firestore.Timestamp.fromDate(data),
           link: String(link),
-          descrizione: String(descrizione).replace(/<[^>]*>/g, '').trim().slice(0, 300),
+          descrizione: String(item.description?._ || item.description || item.summary || '').replace(/<[^>]*>/g, '').trim().slice(0, 300),
           fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
       });
-
+      console.log(`     ✓ ${notizie.length} elementi da: ${feed.url}`);
       results.push(...notizie);
-      console.log(`  → ${notizie.length} elementi da feed Senato (${feed.tipo})`);
     } catch (e) {
-      console.warn(`  ⚠ Errore feed Senato (${feed.tipo}):`, e.message);
+      console.warn(`     ⚠ ${feed.url}: ${e.message}`);
     }
   }
-
   return results;
 }
 
-// Sedute Senato via SPARQL (Senato ha il proprio endpoint dati)
-async function fetchSenatoSedute() {
-  console.log('📥 Senato: sedute (sito ufficiale)...');
-  // Senato pubblica i lavori anche in formato strutturato
-  // Endpoint noto: https://www.senato.it/leg/19/BGT/Schede/Attsen/home.html
-  // Per ora usiamo l'RSS più affidabile; qui potresti aggiungere scraping dedicato.
-  return [];
+// Fallback: scraping pagina comunicati Senato
+async function fetchSenatoComunicati() {
+  console.log('  📡 Senato: pagina comunicati...');
+  try {
+    const raw = await fetchURL('https://www.senato.it/comunicati-stampa');
+    // Parsing minimale dei link alla pagina comunicati
+    const links = [...raw.matchAll(/href="([^"]*comunicat[^"]*)"[^>]*>([^<]{10,})</gi)];
+    const results = links.slice(0, 20).map(match => {
+      const href = match[1].startsWith('http') ? match[1] : `https://www.senato.it${match[1]}`;
+      const titolo = match[2].trim();
+      return {
+        id: `senato-comunicato-${slugify(titolo)}`,
+        fonte: 'senato', tipo: 'comunicato', titolo,
+        data: admin.firestore.Timestamp.fromDate(new Date()),
+        link: href,
+        descrizione: '',
+        fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+    });
+    if (results.length > 0) console.log(`     → ${results.length} comunicati Senato`);
+    return results;
+  } catch (e) {
+    console.warn(`     ⚠ Comunicati Senato: ${e.message}`);
+    return [];
+  }
 }
 
-// ─── AGGIORNAMENTO METADATA ──────────────────────────────────────────────────
-
-async function updateMeta(totalItems) {
-  await db.collection('meta').doc('status').set({
-    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-    totalItems,
-    updatedBy: 'github-actions',
-  });
-}
-
-// ─── MAIN ───────────────────────────────────────────────────────────────────
-
+// ─── MAIN ────────────────────────────────────────────────────────────────────
 async function main() {
-  console.log('\n🏛️  Parlamento Dashboard — Fetch avviato');
+  console.log('\n🏛️  Parlamento Dashboard v2 — Fetch avviato');
   console.log('📅 ', new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' }));
   console.log('─'.repeat(50));
 
   const allItems = [];
 
-  // Camera
-  const cameraItems = await fetchCameraViaSPARQL();
-  const cameraVotazioni = await fetchCameraVotazioni();
-  allItems.push(...cameraItems, ...cameraVotazioni);
+  // ── CAMERA ──
+  console.log('\n📥 Camera dei Deputati:');
+  const cameraSPARQL = await fetchCameraSPARQL();
+  allItems.push(...cameraSPARQL);
 
-  // Senato
-  const senatoItems = await fetchSenatoRSS();
-  await fetchSenatoSedute();
-  allItems.push(...senatoItems);
+  if (cameraSPARQL.length === 0) {
+    console.log('  → SPARQL vuoto, provo RSS...');
+    const cameraRSS = await fetchCameraRSS();
+    allItems.push(...cameraRSS);
 
-  // Deduplicazione per ID
-  const unique = [...new Map(allItems.map((i) => [i.id, i])).values()];
+    if (cameraRSS.length === 0) {
+      console.log('  → RSS vuoto, provo comunicati...');
+      const cameraCom = await fetchCameraComunicati();
+      allItems.push(...cameraCom);
+    }
+  }
 
-  console.log('─'.repeat(50));
-  console.log(`💾 Totale unici: ${unique.length} — salvataggio su Firestore...`);
-  await saveToFirestore(unique);
-  await updateMeta(unique.length);
+  // ── SENATO ──
+  console.log('\n📥 Senato della Repubblica:');
+  const senatoRSS = await fetchSenatoRSS();
+  allItems.push(...senatoRSS);
+
+  if (senatoRSS.length === 0) {
+    console.log('  → RSS vuoto, provo pagina comunicati...');
+    const senatoCom = await fetchSenatoComunicati();
+    allItems.push(...senatoCom);
+  }
+
+  // ── SALVATAGGIO ──
+  console.log('\n─'.repeat(50));
+  const totalSaved = await saveToFirestore(allItems) || 0;
+
+  await db.collection('meta').doc('status').set({
+    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    totalItems: totalSaved,
+    updatedBy: 'github-actions-v2',
+  });
 
   console.log('✅ Completato!\n');
   process.exit(0);
 }
 
-main().catch((err) => {
+main().catch(err => {
   console.error('❌ Errore critico:', err);
   process.exit(1);
 });
