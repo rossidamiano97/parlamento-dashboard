@@ -895,11 +895,21 @@
     return Math.max(0, DAILY_LIMIT - data.count);
   }
 
+  // ▼▼▼ INSERISCI QUI LA TUA CHIAVE GEMINI (gratuita su aistudio.google.com) ▼▼▼
+  const GEMINI_API_KEY = 'AIzaSyBYcGFPcJfzFZ_J39S7fJYJu-iQHWUShps';
+  // ▲▲▲ FINE CONFIG ▲▲▲
+
   window.riassumi = async function(itemId) {
     const reg = itemRegistry[itemId] || {};
     const titolo = reg.titolo || itemId;
     const descrizione = reg.descrizione || '';
     const link = reg.link || '';
+
+    if (GEMINI_API_KEY === 'AIzaSyBYcGFPcJfzFZ_J39S7fJYJu-iQHWUShps') {
+      const box = document.getElementById(`summary-${itemId}`);
+      if (box) box.innerHTML = `<p class="summary-error">⚠ Configura prima la chiave Gemini in index.html — vedi README per istruzioni.</p>`;
+      return;
+    }
     const btn = document.getElementById(`btn-${itemId}`);
     const box = document.getElementById(`summary-${itemId}`);
     if (!btn || !box) return;
@@ -940,19 +950,22 @@ Rispondi in italiano, in modo chiaro e diretto, senza usare termini tecnici non 
     const usedToday = incrementRate();
 
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+      const res = await fetch(geminiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 300,
-          messages: [{ role: 'user', content: prompt }],
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 300, temperature: 0.4 },
         }),
       });
 
-      if (!res.ok) throw new Error(`API error ${res.status}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error?.message || `API error ${res.status}`);
+      }
       const data = await res.json();
-      const text = data?.content?.[0]?.text || 'Nessuna risposta ricevuta.';
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'Nessuna risposta ricevuta.';
 
       summaryCache[itemId] = text;
       const leftAfter = getRemainingToday();
