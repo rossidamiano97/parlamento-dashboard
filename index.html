@@ -416,7 +416,7 @@
   };
 
   const TIPI_CAMERA = ['tutti','seduta','votazione','legge','proposta','mozione','interpellanza','interrogazione','risoluzione','atto'];
-  const TIPI_SENATO = ['tutti','comunicato','commissione','seduta'];
+  const TIPI_SENATO = ['tutti','seduta','commissione','legge','mozione','agenda','atto','comunicato'];
 
   // ── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -433,6 +433,7 @@
       mozione:'badge-mozione', interpellanza:'badge-interpellanza',
       interrogazione:'badge-interrogazione', risoluzione:'badge-risoluzione',
       comunicato:'badge-comunicato', commissione:'badge-commissione',
+      agenda:'badge-seduta', proposta:'badge-proposta',
     };
     return map[tipo] || 'badge-atto';
   }
@@ -442,7 +443,7 @@
       seduta:'Seduta', votazione:'Votazione', atto:'Atto', legge:'Legge',
       proposta:'PDL', mozione:'Mozione', interpellanza:'Interpellanza',
       interrogazione:'Interrogazione', risoluzione:'Risoluzione',
-      comunicato:'Comunicato', commissione:'Commissione',
+      comunicato:'Comunicato', commissione:'Commissione', agenda:'Agenda',
     };
     return map[tipo] || tipo;
   }
@@ -478,17 +479,24 @@
     state.loading = true;
     renderApp();
     try {
+      // Query semplice senza orderBy — sorting in JS per evitare indici compositi
       const constraints = [
-        where('fonte','==', fonte),
-        orderBy('data','desc'),
-        limit(80),
+        where('fonte', '==', fonte),
+        limit(200),
       ];
       if (tipo && tipo !== 'tutti') {
-        constraints.splice(1, 0, where('tipo','==', tipo));
+        constraints.push(where('tipo', '==', tipo));
       }
-      const q = query(collection(db,'notizie'), ...constraints);
+      const q = query(collection(db, 'notizie'), ...constraints);
       const snap = await getDocs(q);
-      state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Ordina per data decrescente lato client
+      items.sort((a, b) => {
+        const ta = a.data?.toMillis ? a.data.toMillis() : 0;
+        const tb = b.data?.toMillis ? b.data.toMillis() : 0;
+        return tb - ta;
+      });
+      state.items = items.slice(0, 80);
     } catch(e) {
       console.error('loadItems:', e.message);
       state.items = [];
