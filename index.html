@@ -905,7 +905,7 @@
     const descrizione = reg.descrizione || '';
     const link = reg.link || '';
 
-    if (GEMINI_API_KEY === 'AIzaSyBYcGFPcJfzFZ_J39S7fJYJu-iQHWUShps') {
+    if (!GEMINI_API_KEY || GEMINI_API_KEY.startsWith('INSERISCI')) {
       const box = document.getElementById(`summary-${itemId}`);
       if (box) box.innerHTML = `<p class="summary-error">⚠ Configura prima la chiave Gemini in index.html — vedi README per istruzioni.</p>`;
       return;
