@@ -822,14 +822,20 @@
   // Mappa riassunti già generati: id -> testo
   const summaryCache = {};
 
+  // Mappa globale degli item per ID (usata dal bottone riassumi)
+  const itemRegistry = {};
+
   function renderCard(item, i) {
     const delay = Math.min(i * 40, 400);
-    const title = item.titolo || 'Nessun titolo';
-    const date  = formatDate(item.data);
-    const desc  = item.descrizione || '';
-    const link  = item.link || '#';
-    const tipo  = item.tipo || 'atto';
-    const itemId = item.id || slugify(title);
+    const title  = item.titolo || 'Nessun titolo';
+    const date   = formatDate(item.data);
+    const desc   = item.descrizione || '';
+    const link   = item.link || '#';
+    const tipo   = item.tipo || 'atto';
+    const itemId = (item.id || slugify(title)).replace(/[^a-z0-9-]/gi, '-');
+
+    // Registra l'item per recuperarlo al click senza passare dati inline
+    itemRegistry[itemId] = { titolo: title, descrizione: desc, link };
 
     const cachedSummary = summaryCache[itemId];
     const summaryHTML = cachedSummary
@@ -850,8 +856,7 @@
           <a href="${link}" target="_blank" rel="noopener" class="card-link" style="padding-top:.2rem">↗</a>
         </div>
         <div class="card-actions">
-          <button class="btn-riassumi" id="btn-${itemId}"
-            onclick="riassumi(${JSON.stringify(itemId)}, ${JSON.stringify(title)}, ${JSON.stringify(desc)}, ${JSON.stringify(link)})">
+          <button class="btn-riassumi" id="btn-${itemId}" data-id="${itemId}" onclick="riassumi(this.dataset.id)">
             ✦ Riassumi
           </button>
         </div>
@@ -890,7 +895,11 @@
     return Math.max(0, DAILY_LIMIT - data.count);
   }
 
-  window.riassumi = async function(itemId, titolo, descrizione, link) {
+  window.riassumi = async function(itemId) {
+    const reg = itemRegistry[itemId] || {};
+    const titolo = reg.titolo || itemId;
+    const descrizione = reg.descrizione || '';
+    const link = reg.link || '';
     const btn = document.getElementById(`btn-${itemId}`);
     const box = document.getElementById(`summary-${itemId}`);
     if (!btn || !box) return;
