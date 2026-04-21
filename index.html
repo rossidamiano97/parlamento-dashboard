@@ -343,6 +343,122 @@
       background: var(--border);
     }
 
+
+    /* ── FILTRO DATA ── */
+    .date-filter-bar {
+      display: flex; align-items: center; gap: .75rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.75rem;
+      animation: fadeUp .4s ease .15s both;
+    }
+    .date-filter-label {
+      font-size: .65rem;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    .date-presets { display: flex; gap: .4rem; flex-wrap: wrap; }
+    .date-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-mid);
+      padding: .3rem .75rem;
+      border-radius: 2px;
+      font-family: 'Josefin Sans', sans-serif;
+      font-size: .68rem;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all .2s;
+      white-space: nowrap;
+    }
+    .date-btn:hover { border-color: var(--border-hov); color: var(--text); }
+    .date-btn.active { background: var(--surface2); border-color: var(--gold); color: var(--gold); }
+    .date-separator {
+      width: 1px; height: 18px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    .date-inputs { display: flex; align-items: center; gap: .4rem; }
+    .date-input {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-mid);
+      padding: .28rem .6rem;
+      border-radius: 2px;
+      font-family: 'Josefin Sans', sans-serif;
+      font-size: .68rem;
+      letter-spacing: .04em;
+      cursor: pointer;
+      transition: border-color .2s;
+      width: 120px;
+    }
+    .date-input:focus { outline: none; border-color: var(--gold-dim); color: var(--text); }
+    .date-input::-webkit-calendar-picker-indicator { filter: invert(.4); cursor: pointer; }
+    .date-range-sep { font-size: .65rem; color: var(--text-dim); }
+
+    /* ── RIASSUNTO AI ── */
+    .card-actions {
+      display: flex; align-items: center; gap: .6rem;
+      margin-top: .75rem;
+    }
+    .btn-riassumi {
+      background: transparent;
+      border: 1px solid var(--gold-dim);
+      color: var(--gold-dim);
+      padding: .28rem .75rem;
+      border-radius: 2px;
+      font-family: 'Josefin Sans', sans-serif;
+      font-size: .65rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all .2s;
+      display: inline-flex; align-items: center; gap: .4rem;
+    }
+    .btn-riassumi:hover:not(:disabled) {
+      border-color: var(--gold);
+      color: var(--gold);
+      background: rgba(201,168,76,.06);
+    }
+    .btn-riassumi:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-riassumi .btn-spin {
+      width: 10px; height: 10px;
+      border: 1.5px solid rgba(201,168,76,.3);
+      border-top-color: var(--gold);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+      flex-shrink: 0;
+    }
+    .summary-box {
+      margin-top: .75rem;
+      background: rgba(201,168,76,.05);
+      border: 1px solid rgba(201,168,76,.2);
+      border-left: 3px solid var(--gold-dim);
+      border-radius: 0 3px 3px 0;
+      padding: .85rem 1rem;
+      font-size: .8rem;
+      line-height: 1.75;
+      color: var(--text-mid);
+      animation: fadeUp .35s ease both;
+    }
+    .summary-box .summary-label {
+      color: var(--gold-dim);
+      font-size: .6rem;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      display: block;
+      margin-bottom: .45rem;
+      font-weight: 600;
+    }
+    .summary-error {
+      color: #c06060;
+      font-size: .72rem;
+      margin-top: .5rem;
+      font-style: italic;
+    }
+
     /* ── ANIMATIONS ── */
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(12px); }
@@ -410,10 +526,54 @@
   let state = {
     view:        'home',   // 'home' | 'camera' | 'senato'
     filtroTipo:  'tutti',
+    filtroData:  'tutto',  // 'oggi' | 'settimana' | 'mese' | 'trimestre' | 'tutto' | 'custom'
+    dataFrom:    '',
+    dataTo:      '',
     items:       [],
+    allItems:    [],       // tutti gli elementi caricati (prima del filtro data)
     counts:      { camera: 0, senato: 0 },
     loading:     false,
   };
+
+  const DATE_PRESETS = [
+    { key: 'oggi',       label: 'Oggi',         days: 0 },
+    { key: 'settimana',  label: '7 giorni',      days: 7 },
+    { key: 'mese',       label: '30 giorni',     days: 30 },
+    { key: 'trimestre',  label: '90 giorni',     days: 90 },
+    { key: 'tutto',      label: 'Tutto',         days: -1 },
+  ];
+
+  function getDateRange(preset, from, to) {
+    const now = new Date();
+    if (preset === 'custom') {
+      return {
+        from: from ? new Date(from + 'T00:00:00') : null,
+        to:   to   ? new Date(to   + 'T23:59:59') : null,
+      };
+    }
+    if (preset === 'tutto' || preset === '') return { from: null, to: null };
+    const p = DATE_PRESETS.find(d => d.key === preset);
+    if (!p || p.days < 0) return { from: null, to: null };
+    if (p.days === 0) {
+      const start = new Date(now); start.setHours(0,0,0,0);
+      return { from: start, to: now };
+    }
+    const start = new Date(now);
+    start.setDate(start.getDate() - p.days);
+    start.setHours(0,0,0,0);
+    return { from: start, to: now };
+  }
+
+  function applyDateFilter(items) {
+    const { from, to } = getDateRange(state.filtroData, state.dataFrom, state.dataTo);
+    if (!from && !to) return items;
+    return items.filter(item => {
+      const d = item.data?.toDate ? item.data.toDate() : new Date(item.data || 0);
+      if (from && d < from) return false;
+      if (to   && d > to)   return false;
+      return true;
+    });
+  }
 
   const TIPI_CAMERA = ['tutti','seduta','votazione','legge','proposta','mozione','interpellanza','interrogazione','risoluzione','atto'];
   const TIPI_SENATO = ['tutti','seduta','commissione','legge','mozione','agenda','atto','comunicato'];
@@ -479,10 +639,9 @@
     state.loading = true;
     renderApp();
     try {
-      // Query semplice senza orderBy — sorting in JS per evitare indici compositi
       const constraints = [
         where('fonte', '==', fonte),
-        limit(200),
+        limit(400),
       ];
       if (tipo && tipo !== 'tutti') {
         constraints.push(where('tipo', '==', tipo));
@@ -490,20 +649,35 @@
       const q = query(collection(db, 'notizie'), ...constraints);
       const snap = await getDocs(q);
       let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      // Ordina per data decrescente lato client
       items.sort((a, b) => {
         const ta = a.data?.toMillis ? a.data.toMillis() : 0;
         const tb = b.data?.toMillis ? b.data.toMillis() : 0;
         return tb - ta;
       });
-      state.items = items.slice(0, 80);
+      state.allItems = items;
+      state.items = applyDateFilter(items).slice(0, 80);
     } catch(e) {
       console.error('loadItems:', e.message);
+      state.allItems = [];
       state.items = [];
     }
     state.loading = false;
     renderApp();
   }
+
+  function setFiltroData(preset, from, to) {
+    state.filtroData = preset;
+    if (from !== undefined) state.dataFrom = from;
+    if (to   !== undefined) state.dataTo   = to;
+    state.items = applyDateFilter(state.allItems).slice(0, 80);
+    renderApp();
+  }
+  window.setFiltroData = (preset) => setFiltroData(preset);
+  window.setDateRange  = () => {
+    const f = document.getElementById('date-from')?.value || '';
+    const t = document.getElementById('date-to')?.value   || '';
+    setFiltroData('custom', f, t);
+  };
 
   // ── NAVIGAZIONE ───────────────────────────────────────────────────────────
 
@@ -607,18 +781,46 @@
       </div>`;
     }
 
+    const dateBtns = DATE_PRESETS.map(p =>
+      `<button class="date-btn ${state.filtroData===p.key?'active':''}" onclick="setFiltroData('${p.key}')">${p.label}</button>`
+    ).join('');
+
+    const dateInputs = `
+      <div class="date-inputs">
+        <input type="date" id="date-from" class="date-input"
+          value="${state.dataFrom}" onchange="window.setDateRange()"
+          title="Data inizio">
+        <span class="date-range-sep">→</span>
+        <input type="date" id="date-to" class="date-input"
+          value="${state.dataTo}" onchange="window.setDateRange()"
+          title="Data fine">
+      </div>`;
+
+    const totalFiltered = state.items.length;
+    const totalAll = state.allItems.length;
+    const countLabel = state.filtroData !== 'tutto'
+      ? `${totalFiltered} di ${totalAll} elementi`
+      : `${totalFiltered} elementi`;
+
     return `
       <div class="ramo-header ${colClass}">
         <h2>${label}</h2>
-        <div style="font-size:.7rem;color:var(--text-dim);letter-spacing:.06em;">
-          ${state.items.length ? state.items.length + ' elementi' : ''}
-        </div>
+        <div style="font-size:.7rem;color:var(--text-dim);letter-spacing:.06em;">${countLabel}</div>
       </div>
       <div class="section-divider"><span>Filtra per tipo</span></div>
       <div class="filter-bar">${filtroBtns}</div>
+      <div class="section-divider"><span>Filtra per data</span></div>
+      <div class="date-filter-bar">
+        <div class="date-presets">${dateBtns}</div>
+        <div class="date-separator"></div>
+        ${dateInputs}
+      </div>
       ${itemsHTML}
     `;
   }
+
+  // Mappa riassunti già generati: id -> testo
+  const summaryCache = {};
 
   function renderCard(item, i) {
     const delay = Math.min(i * 40, 400);
@@ -627,22 +829,134 @@
     const desc  = item.descrizione || '';
     const link  = item.link || '#';
     const tipo  = item.tipo || 'atto';
+    const itemId = item.id || slugify(title);
+
+    const cachedSummary = summaryCache[itemId];
+    const summaryHTML = cachedSummary
+      ? `<div class="summary-box"><span class="summary-label">✦ Riassunto AI</span>${cachedSummary}</div>`
+      : '';
 
     return `
-      <a class="news-card" href="${link}" target="_blank" rel="noopener"
-         style="animation-delay:${delay}ms">
-        <div class="card-left">
-          <div class="card-top">
-            <span class="tipo-badge ${badgeClass(tipo)}">${tipoLabel(tipo)}</span>
-            <span class="card-date">${date}</span>
+      <div class="news-card" style="animation-delay:${delay}ms; animation: fadeUp .4s ease both; display:grid; grid-template-columns:1fr;">
+        <div style="display:grid; grid-template-columns:1fr auto; align-items:start; gap:1rem;">
+          <div class="card-left">
+            <div class="card-top">
+              <span class="tipo-badge ${badgeClass(tipo)}">${tipoLabel(tipo)}</span>
+              <span class="card-date">${date}</span>
+            </div>
+            <h3>${title}</h3>
+            ${desc ? `<p class="card-desc">${desc}</p>` : ''}
           </div>
-          <h3>${title}</h3>
-          ${desc ? `<p class="card-desc">${desc}</p>` : ''}
+          <a href="${link}" target="_blank" rel="noopener" class="card-link" style="padding-top:.2rem">↗</a>
         </div>
-        <div class="card-link">↗</div>
-      </a>
+        <div class="card-actions">
+          <button class="btn-riassumi" id="btn-${itemId}"
+            onclick="riassumi(${JSON.stringify(itemId)}, ${JSON.stringify(title)}, ${JSON.stringify(desc)}, ${JSON.stringify(link)})">
+            ✦ Riassumi
+          </button>
+        </div>
+        <div id="summary-${itemId}">${summaryHTML}</div>
+      </div>
     `;
   }
+
+  function slugify(str) {
+    return (str || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 60);
+  }
+
+  // ── LIMITE GIORNALIERO ─────────────────────────────────────────────────────
+  const DAILY_LIMIT = 15; // riassunti al giorno per utente
+
+  function getRateData() {
+    try {
+      const raw = localStorage.getItem('parlamento_rate');
+      if (!raw) return { date: '', count: 0 };
+      return JSON.parse(raw);
+    } catch { return { date: '', count: 0 }; }
+  }
+
+  function incrementRate() {
+    const today = new Date().toISOString().split('T')[0];
+    const data = getRateData();
+    const count = (data.date === today ? data.count : 0) + 1;
+    localStorage.setItem('parlamento_rate', JSON.stringify({ date: today, count }));
+    return count;
+  }
+
+  function getRemainingToday() {
+    const today = new Date().toISOString().split('T')[0];
+    const data = getRateData();
+    if (data.date !== today) return DAILY_LIMIT;
+    return Math.max(0, DAILY_LIMIT - data.count);
+  }
+
+  window.riassumi = async function(itemId, titolo, descrizione, link) {
+    const btn = document.getElementById(`btn-${itemId}`);
+    const box = document.getElementById(`summary-${itemId}`);
+    if (!btn || !box) return;
+
+    // Toggle: se già mostrato, nascondi
+    if (summaryCache[itemId]) {
+      box.innerHTML = '';
+      delete summaryCache[itemId];
+      btn.innerHTML = '✦ Riassumi';
+      btn.disabled = false;
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spin"></span> Analisi...';
+
+    const prompt = `Sei un assistente specializzato in diritto parlamentare italiano. 
+Analizza questo atto parlamentare e fornisci:
+1. Una spiegazione chiara e accessibile in 2-3 frasi (cosa è, cosa propone o cosa è successo)
+2. Il potenziale impatto sui cittadini italiani (1-2 frasi)
+
+Titolo: ${titolo}
+${descrizione ? 'Descrizione: ' + descrizione : ''}
+${link ? 'Fonte: ' + link : ''}
+
+Rispondi in italiano, in modo chiaro e diretto, senza usare termini tecnici non necessari. Massimo 120 parole.`;
+
+    // Controlla limite giornaliero
+    const remaining = getRemainingToday();
+    if (remaining <= 0) {
+      box.innerHTML = `<p class="summary-error">⚠ Limite giornaliero di ${DAILY_LIMIT} riassunti raggiunto. Torna domani!</p>`;
+      btn.innerHTML = '✦ Riassumi';
+      btn.disabled = false;
+      return;
+    }
+
+    // Incrementa contatore prima della chiamata
+    const usedToday = incrementRate();
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 300,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const data = await res.json();
+      const text = data?.content?.[0]?.text || 'Nessuna risposta ricevuta.';
+
+      summaryCache[itemId] = text;
+      const leftAfter = getRemainingToday();
+      const limitNote = leftAfter <= 3 ? `<span style="font-size:.6rem;color:var(--gold-dim);opacity:.7;display:block;margin-top:.5rem">Riassunti rimanenti oggi: ${leftAfter}/${DAILY_LIMIT}</span>` : '';
+      box.innerHTML = `<div class="summary-box"><span class="summary-label">✦ Riassunto AI</span>${text}${limitNote}</div>`;
+      btn.innerHTML = '✦ Nascondi';
+      btn.disabled = false;
+    } catch (e) {
+      box.innerHTML = `<p class="summary-error">Errore nel generare il riassunto: ${e.message}</p>`;
+      btn.innerHTML = '✦ Riassumi';
+      btn.disabled = false;
+    }
+  };
 
   // ── INIT ───────────────────────────────────────────────────────────────────
   (async () => {
