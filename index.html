@@ -1,409 +1,385 @@
-<!DOCTYPE html>
-<html lang="it">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Parlamento Italiano — Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #0a0c10; --surface: #111318; --surface2: #181c24; --border: #232836;
-      --accent: #c9a84c; --accent2: #8b6f2e; --text: #e8eaf0; --text2: #9aa0b4;
-      --green: #4caf82; --red: #e05555; --blue: #4a8fd4;
+// ========================================================================
+// PARLAMENTO DASHBOARD — Fetch Data v9
+// Focus: solo contenuto legislativo (proposto / in discussione / approvato)
+// ========================================================================
+
+import admin from 'firebase-admin';
+import { parseStringPromise } from 'xml2js';
+
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+const db = admin.firestore();
+
+console.log('🏛  Parlamento Dashboard v9 — Fetch avviato');
+console.log('📅 ', new Date().toLocaleString('it-IT'));
+console.log('─'.repeat(50));
+
+const UA = { 'User-Agent': 'Mozilla/5.0 (compatible; ParlamentoDashboard/1.0)' };
+
+async function safeFetch(url, opts = {}) {
+  const res = await fetch(url, { headers: UA, ...opts });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res;
+}
+
+function makeId(prefix, str) {
+  return prefix + '-' + String(str).replace(/https?:\/\//, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 80);
+}
+
+function safeDate(raw) {
+  if (!raw) return null;
+  try {
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return null;
+    const y = d.getFullYear();
+    if (y < 2000 || y > 2035) return null;
+    return d;
+  } catch (e) { return null; }
+}
+
+async function parseRSS(url, fonte, tipo, stato) {
+  const res = await safeFetch(url);
+  const xml = await res.text();
+  const parsed = await parseStringPromise(xml);
+  const rssItems = parsed?.rss?.channel?.[0]?.item || parsed?.['rdf:RDF']?.item || [];
+  const items = [];
+  rssItems.slice(0, 50).forEach(it => {
+    const titolo = (it.title?.[0] || '').replace(/<[^>]+>/g, '').trim();
+    const link = (it.link?.[0] || it['rss:link']?.[0] || '').trim();
+    const descr = (it.description?.[0] || '').replace(/<[^>]+>/g, '').trim();
+    const pubDate = it.pubDate?.[0] || it['dc:date']?.[0] || '';
+    if (!titolo) return;
+    items.push({
+      id: makeId(`${fonte}-${tipo}`, link || titolo),
+      fonte, tipo, stato, titolo,
+      descrizione: descr.slice(0, 500),
+      link,
+      data: safeDate(pubDate),
+    });
+  });
+  return items;
+}
+
+// ═══════════════════════════════════════════════════════
+// SENATO — Solo feed legislativi, classificati per stato
+// ═══════════════════════════════════════════════════════
+
+const SENATO_FEEDS = [
+  // PROPOSTE: nuovi atti presentati
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedDDL.xml', tipo: 'disegno di legge', stato: 'proposto' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedADG.xml', tipo: 'atto del governo', stato: 'proposto' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedMR.xml', tipo: 'mozione', stato: 'proposto' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedEODG.xml', tipo: 'emendamento', stato: 'proposto' },
+  // IN DISCUSSIONE: ordini del giorno e sedute attuali
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedODGA.xml', tipo: 'ordine del giorno', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedCLA.xml', tipo: 'calendario', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedODGGC.xml', tipo: 'ordine del giorno commissioni', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedRSTA.xml', tipo: 'resoconto Assemblea', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedRSGC.xml', tipo: 'resoconto commissioni', stato: 'in discussione' },
+  // APPROVATE: messaggi di approvazione
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedMDDL.xml', tipo: 'legge approvata', stato: 'approvato' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedMDOC.xml', tipo: 'documento approvato', stato: 'approvato' },
+];
+
+async function fetchSenato() {
+  const items = [];
+  console.log('📥 Senato della Repubblica:');
+  for (const feed of SENATO_FEEDS) {
+    try {
+      const res = await parseRSS(feed.url, 'senato', feed.tipo, feed.stato);
+      items.push(...res);
+      console.log(`   ✓ [${feed.stato}] ${feed.tipo} (${res.length})`);
+    } catch (e) {
+      console.warn(`   ⚠ ${feed.tipo}: ${e.message}`);
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; min-height: 100vh; }
-    header { background: linear-gradient(180deg, #0d1017 0%, var(--bg) 100%); border-bottom: 1px solid var(--border); padding: 20px 32px; display: flex; align-items: center; justify-content: space-between; }
-    header h1 { font-family: 'Cinzel', serif; font-size: 1.5rem; color: var(--accent); letter-spacing: 0.05em; }
-    header h1 span { color: var(--text2); font-size: 0.9rem; font-family: 'Inter', sans-serif; display: block; margin-top: 2px; font-weight: 300; }
-    #last-update { font-size: 0.75rem; color: var(--text2); }
-    #breadcrumb { padding: 12px 32px; font-size: 0.8rem; color: var(--text2); display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
-    #breadcrumb span { cursor: pointer; }
-    #breadcrumb span:hover { color: var(--accent); }
-    #breadcrumb .sep { color: var(--border); }
-    main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
-    .level-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 32px; }
-    .level-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 36px 28px; cursor: pointer; transition: all 0.2s; text-align: center; }
-    .level-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-    .level-card .icon { font-size: 2.5rem; margin-bottom: 12px; }
-    .level-card h2 { font-family: 'Cinzel', serif; font-size: 1.2rem; color: var(--accent); }
-    .level-card p { font-size: 0.85rem; color: var(--text2); margin-top: 8px; }
-    #filters { margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    .filter-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-    .filter-label { font-size: 0.75rem; color: var(--text2); margin-right: 4px; }
-    .filter-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); border-radius: 6px; padding: 5px 12px; font-size: 0.78rem; cursor: pointer; transition: all 0.15s; }
-    .filter-btn:hover, .filter-btn.active { background: var(--accent2); border-color: var(--accent); color: var(--text); }
-    .date-input { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 0.78rem; font-family: 'Inter', sans-serif; }
-    .filter-divider { width: 100%; height: 1px; background: var(--border); margin: 4px 0; }
-    #count-badge { margin-left: auto; font-size: 0.75rem; color: var(--text2); }
-    #news-list { display: flex; flex-direction: column; gap: 14px; }
-    .news-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; transition: border-color 0.2s; }
-    .news-card:hover { border-color: #2d3448; }
-    .news-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-    .news-card h3 { font-size: 0.95rem; font-weight: 500; line-height: 1.4; flex: 1; }
-    .news-card h3 a { color: var(--text); text-decoration: none; }
-    .news-card h3 a:hover { color: var(--accent); }
-    .news-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-    .badge { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; }
-    .badge-seduta { background: #1a2a1a; color: var(--green); border: 1px solid #2a4a2a; }
-    .badge-atto { background: #1a1f30; color: var(--blue); border: 1px solid #2a3050; }
-    .badge-votazione { background: #2a1a1a; color: var(--red); border: 1px solid #4a2a2a; }
-    .badge-disegno { background: #1e1a2a; color: #9a7adf; border: 1px solid #3a2a5a; }
-    .badge-commissione { background: #1a2430; color: #4ab0d4; border: 1px solid #2a4050; }
-    .badge-comunicato { background: #2a2010; color: #d4a44a; border: 1px solid #5a4020; }
-    .badge-mozione { background: #1a2820; color: #4ad4a0; border: 1px solid #2a5040; }
-    .badge-resoconto { background: #201a2a; color: #c07af0; border: 1px solid #402a5a; }
-    .badge-agenda { background: #2a2820; color: #d4d04a; border: 1px solid #5a5020; }
-    .badge-default { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
-    .news-date, .news-source { font-size: 0.72rem; color: var(--text2); }
-    .stato-badge {
-      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;
-      padding: 3px 10px; border-radius: 20px; text-transform: uppercase;
-    }
-    .stato-proposto { background: rgba(74, 143, 212, 0.15); color: #6ab4f4; border: 1px solid #2a5a8a; }
-    .stato-in-discussione { background: rgba(201, 168, 76, 0.15); color: var(--accent); border: 1px solid var(--accent2); }
-    .stato-approvato { background: rgba(76, 175, 130, 0.15); color: #5ec997; border: 1px solid #2a6a4a; }
-    .btn-riassumi { background: transparent; border: 1px solid var(--accent2); color: var(--accent); border-radius: 6px; padding: 4px 10px; font-size: 0.72rem; cursor: pointer; white-space: nowrap; transition: all 0.15s; flex-shrink: 0; }
-    .btn-riassumi:hover { background: var(--accent2); }
-    .btn-riassumi:disabled { opacity: 0.4; cursor: not-allowed; }
-    .ai-summary { margin-top: 14px; background: var(--surface2); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; font-size: 0.85rem; line-height: 1.6; color: var(--text); animation: fadeIn 0.3s ease; }
-    .ai-summary .ai-label { font-size: 0.7rem; color: var(--accent); font-weight: 600; margin-bottom: 8px; letter-spacing: 0.05em; }
-    .ai-limit-warn { font-size: 0.7rem; color: var(--accent2); margin-top: 8px; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .empty-state { text-align: center; padding: 60px 20px; color: var(--text2); }
-    .empty-state .icon { font-size: 3rem; margin-bottom: 16px; }
-    .empty-state p { font-size: 0.9rem; }
-    .btn-back { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); border-radius: 8px; padding: 8px 16px; font-size: 0.82rem; cursor: pointer; margin-bottom: 24px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s; }
-    .btn-back:hover { border-color: var(--accent); color: var(--text); }
-    .section-title { font-family: 'Cinzel', serif; font-size: 1.1rem; color: var(--accent); margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-  </style>
-</head>
-<body>
+  }
+  console.log(`   ✅ Senato totale: ${items.length} elementi`);
+  return items;
+}
 
-<header>
-  <h1>🏛 Parlamento Italiano <span>Dashboard legislativa in tempo reale</span></h1>
-  <div id="last-update">—</div>
-</header>
+// ═══════════════════════════════════════════════════════
+// CAMERA — SPARQL + scraping mirato
+// ═══════════════════════════════════════════════════════
 
-<div id="breadcrumb"><span onclick="goHome()">🏠 Home</span></div>
+const SPARQL_URL = 'https://dati.camera.it/sparql';
+const LEG_19 = 'http://dati.camera.it/ocd/legislatura.rdf/repubblica_19';
 
-<main><div id="app"></div></main>
+async function runSPARQL(query) {
+  const res = await fetch(SPARQL_URL + '?' + new URLSearchParams({
+    query, format: 'application/sparql-results+json', 'default-graph-uri': ''
+  }), { headers: { ...UA, 'Accept': 'application/sparql-results+json' } });
+  if (!res.ok) throw new Error(`SPARQL HTTP ${res.status}`);
+  const json = await res.json();
+  return json?.results?.bindings || [];
+}
 
-<script type="module">
-  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
-  import { getFirestore, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
-
-  console.log('🏛 Dashboard Parlamento v8 caricato (filtro stato: proposte/in discussione/approvate)');
-
-  const firebaseConfig = {
-    apiKey: "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
-    authDomain: "parlamento-dashboard.firebaseapp.com",
-    projectId: "parlamento-dashboard",
-    storageBucket: "parlamento-dashboard.firebasestorage.app",
-    messagingSenderId: "111190618195",
-    appId: "1:111190618195:web:057005348e1736d2e096a6",
-  };
-
-  const WORKER_URL = 'https://parlamento-ai.rossidamiano-02.workers.dev';
-  const DAILY_LIMIT = 15;
-
-  const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
-
-  let allItems = [];
-  let currentSource = null;
-  let activeType = 'tutti';
-  let activeStato = 'tutti';
-  let activeDateFilter = 'tutti';
-  let dateFrom = '', dateTo = '';
-  const itemRegistry = {};
-  const summaryCache = {};
-
-  function getTodayKey() { return 'aiUsage_' + new Date().toISOString().slice(0,10); }
-  function getUsage() { return parseInt(localStorage.getItem(getTodayKey()) || '0'); }
-  function incrementUsage() { localStorage.setItem(getTodayKey(), getUsage() + 1); }
-  function remainingToday() { return Math.max(0, DAILY_LIMIT - getUsage()); }
-
-  function badgeClass(tipo) {
-    const map = { seduta:'badge-seduta', atto:'badge-atto', votazione:'badge-votazione', 'disegno di legge':'badge-disegno', commissione:'badge-commissione', comunicato:'badge-comunicato', mozione:'badge-mozione', resoconto:'badge-resoconto', agenda:'badge-agenda', legge:'badge-disegno' };
-    const t = (tipo||'').toLowerCase();
-    for (const k of Object.keys(map)) { if (t.includes(k)) return map[k]; }
-    return 'badge-default';
+async function fetchCameraSPARQL() {
+  const items = [];
+  // Query 1: ultimi progetti di legge presentati
+  try {
+    const query = `
+      PREFIX ocd: <http://dati.camera.it/ocd/>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX dc: <http://purl.org/dc/elements/1.1/>
+      SELECT DISTINCT ?pdl ?titolo ?numero ?dataPres WHERE {
+        ?pdl a ocd:progettoDiLegge .
+        ?pdl ocd:rif_leg <${LEG_19}> .
+        OPTIONAL { ?pdl dc:title ?titolo }
+        OPTIONAL { ?pdl ocd:numero ?numero }
+        OPTIONAL { ?pdl ocd:rif_presentazione ?presentazione . ?presentazione ocd:data ?dataPres }
+      } ORDER BY DESC(?dataPres) LIMIT 50
+    `;
+    const rows = await runSPARQL(query);
+    rows.forEach(r => {
+      const titolo = r.titolo?.value || `PdL n. ${r.numero?.value || '?'}`;
+      const link = r.pdl?.value || '';
+      const data = r.dataPres?.value ? safeDate(r.dataPres.value) : null;
+      items.push({
+        id: makeId('camera-pdl', link || titolo),
+        fonte: 'camera', tipo: 'disegno di legge', stato: 'proposto',
+        titolo, descrizione: '', link, data
+      });
+    });
+    console.log(`   ✓ SPARQL progetti di legge (${rows.length})`);
+  } catch (e) {
+    console.warn(`   ⚠ SPARQL PdL: ${e.message}`);
   }
 
-  // PARSER DATE ROBUSTO - gestisce Firestore Timestamp, ISO, DD/MM/YYYY
-  // NOTA: NON includiamo 'timestamp' e 'fetchedAt' perche' sono momento del fetch,
-  // non data reale dell'atto.
-  function parseItemDate(item) {
-    const candidates = [item.data, item.pubDate, item.dataPubblicazione];
-    for (const raw of candidates) {
-      if (!raw) continue;
-      // Firestore Timestamp: oggetto con metodo .toDate()
-      if (typeof raw === 'object' && typeof raw.toDate === 'function') {
+  // Query 2: leggi approvate
+  try {
+    const query = `
+      PREFIX ocd: <http://dati.camera.it/ocd/>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX dc: <http://purl.org/dc/elements/1.1/>
+      SELECT DISTINCT ?legge ?titolo ?dataApprovazione WHERE {
+        ?legge a ocd:legge .
+        ?legge ocd:rif_leg <${LEG_19}> .
+        OPTIONAL { ?legge dc:title ?titolo }
+        OPTIONAL { ?legge ocd:dataApprovazione ?dataApprovazione }
+      } ORDER BY DESC(?dataApprovazione) LIMIT 30
+    `;
+    const rows = await runSPARQL(query);
+    rows.forEach(r => {
+      const titolo = r.titolo?.value || 'Legge';
+      const link = r.legge?.value || '';
+      const data = r.dataApprovazione?.value ? safeDate(r.dataApprovazione.value) : null;
+      items.push({
+        id: makeId('camera-legge', link || titolo),
+        fonte: 'camera', tipo: 'legge approvata', stato: 'approvato',
+        titolo, descrizione: '', link, data
+      });
+    });
+    console.log(`   ✓ SPARQL leggi approvate (${rows.length})`);
+  } catch (e) {
+    console.warn(`   ⚠ SPARQL leggi: ${e.message}`);
+  }
+
+  return items;
+}
+
+async function fetchCameraScraping() {
+  const items = [];
+
+  // Resoconti Assemblea (in discussione)
+  try {
+    const res = await safeFetch('https://www.camera.it/leg19/207');
+    const html = await res.text();
+    const matches = [...html.matchAll(/<a[^>]+href="(\/leg19\/410\?idSeduta=\d+[^"]*)"[^>]*>\s*([^<]{10,400})\s*<\/a>/gi)];
+    const seen = new Set();
+    matches.slice(0, 40).forEach(([_, href, testo]) => {
+      const titolo = testo.replace(/\s+/g, ' ').trim();
+      if (!titolo || seen.has(titolo)) return;
+      if (/^(guarda|odg|leggi|vai|apri|visualizza)/i.test(titolo)) return;
+      seen.add(titolo);
+      const link = `https://www.camera.it${href}`;
+      items.push({
+        id: makeId('camera-resoconto', link),
+        fonte: 'camera', tipo: 'resoconto Assemblea', stato: 'in discussione',
+        titolo: `Seduta: ${titolo}`, descrizione: '', link, data: new Date()
+      });
+    });
+    console.log(`   ✓ Resoconti Assemblea (${seen.size})`);
+  } catch (e) {
+    console.warn(`   ⚠ Resoconti Assemblea: ${e.message}`);
+  }
+
+  // Decreti-legge esaminati (in discussione + approvati)
+  try {
+    const res = await safeFetch('https://www.camera.it/leg19/577');
+    const html = await res.text();
+    const matches = [...html.matchAll(/Decreto[\s-]*Legge[^<]{5,200}/gi)];
+    const seen = new Set();
+    matches.slice(0, 20).forEach(([testo]) => {
+      const titolo = testo.replace(/\s+/g, ' ').trim();
+      if (!titolo || seen.has(titolo) || titolo.length < 20) return;
+      seen.add(titolo);
+      items.push({
+        id: makeId('camera-decreto', titolo),
+        fonte: 'camera', tipo: 'decreto legge', stato: 'in discussione',
+        titolo, descrizione: '',
+        link: 'https://www.camera.it/leg19/577',
+        data: new Date()
+      });
+    });
+    console.log(`   ✓ Decreti-legge (${seen.size})`);
+  } catch (e) {
+    console.warn(`   ⚠ Decreti-legge: ${e.message}`);
+  }
+
+  // Atti di indirizzo (interrogazioni, mozioni, interpellanze) — proposti
+  try {
+    const res = await safeFetch('https://aic.camera.it/aic/search.html?legislatura=19');
+    const html = await res.text();
+    // Cerca tabella con righe atti
+    const rows = [...html.matchAll(/<tr[^>]*>[\s\S]*?<\/tr>/gi)];
+    const seen = new Set();
+    let count = 0;
+    rows.forEach(([tr]) => {
+      if (count >= 30) return;
+      const tipoMatch = tr.match(/>(Interrogazione[^<]*|Mozione[^<]*|Interpellanza[^<]*|Risoluzione[^<]*|Ordine del [Gg]iorno[^<]*)</);
+      const linkMatch = tr.match(/href="([^"]+)"/);
+      const titoloMatch = tr.match(/title="([^"]+)"/);
+      if (!tipoMatch) return;
+      const titolo = (titoloMatch?.[1] || tipoMatch[1]).replace(/\s+/g, ' ').trim();
+      if (!titolo || seen.has(titolo) || titolo.length < 10) return;
+      seen.add(titolo);
+      const href = linkMatch?.[1] || '';
+      const link = href.startsWith('http') ? href : `https://aic.camera.it${href}`;
+      const tipoRaw = tipoMatch[1].toLowerCase();
+      const tipo = tipoRaw.includes('mozione') ? 'mozione' :
+                   tipoRaw.includes('interroga') ? 'interrogazione' :
+                   tipoRaw.includes('interpella') ? 'interpellanza' :
+                   tipoRaw.includes('risoluz') ? 'risoluzione' : 'ordine del giorno';
+      items.push({
+        id: makeId(`camera-${tipo}`, link || titolo),
+        fonte: 'camera', tipo, stato: 'proposto',
+        titolo, descrizione: '', link, data: new Date()
+      });
+      count++;
+    });
+    console.log(`   ✓ Atti di indirizzo (${seen.size})`);
+  } catch (e) {
+    console.warn(`   ⚠ Atti di indirizzo: ${e.message}`);
+  }
+
+  // Resoconti Commissioni (in discussione)
+  try {
+    const res = await safeFetch('https://www.camera.it/leg19/210');
+    const html = await res.text();
+    const matches = [...html.matchAll(/<a[^>]+href="(\/leg19\/[^"]*resoconto[^"]*)"[^>]*>\s*([^<]{10,300})\s*<\/a>/gi)];
+    const seen = new Set();
+    matches.slice(0, 30).forEach(([_, href, testo]) => {
+      const titolo = testo.replace(/\s+/g, ' ').trim();
+      if (!titolo || seen.has(titolo)) return;
+      seen.add(titolo);
+      const link = `https://www.camera.it${href}`;
+      items.push({
+        id: makeId('camera-resoconto-comm', link),
+        fonte: 'camera', tipo: 'resoconto commissioni', stato: 'in discussione',
+        titolo: `Commissione: ${titolo}`, descrizione: '', link, data: new Date()
+      });
+    });
+    console.log(`   ✓ Resoconti Commissioni (${seen.size})`);
+  } catch (e) {
+    console.warn(`   ⚠ Resoconti Commissioni: ${e.message}`);
+  }
+
+  return items;
+}
+
+async function fetchCamera() {
+  console.log('📥 Camera dei Deputati:');
+  const items = [];
+  // Tenta SPARQL (fonte migliore)
+  try {
+    items.push(...await fetchCameraSPARQL());
+  } catch (e) { console.warn(`   ⚠ SPARQL: ${e.message}`); }
+  // Scraping mirato (complementare e fallback)
+  items.push(...await fetchCameraScraping());
+  // Dedup
+  const dedup = Object.values(Object.fromEntries(items.map(i => [i.id, i])));
+  console.log(`   ✅ Camera totale: ${dedup.length} elementi unici`);
+  return dedup;
+}
+
+// ═══════════════════════════════════════════════════════
+// SAVE TO FIRESTORE
+// ═══════════════════════════════════════════════════════
+
+function sanitizeForFirestore(item) {
+  const clean = {};
+  for (const [k, v] of Object.entries(item)) {
+    if (v === undefined) continue;
+    if (v === null) { clean[k] = null; continue; }
+    if (v instanceof Date) {
+      if (isNaN(v.getTime())) { clean[k] = null; continue; }
+      clean[k] = admin.firestore.Timestamp.fromDate(v);
+      continue;
+    }
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      clean[k] = v;
+    }
+  }
+  return clean;
+}
+
+async function saveItems(items) {
+  if (!items.length) {
+    console.log('─'.repeat(50));
+    console.log('   → Nessun elemento da salvare.');
+    return;
+  }
+  const unique = Object.values(Object.fromEntries(items.map(i => [i.id, i])));
+  console.log('─'.repeat(50));
+  console.log(`💾 Salvataggio ${unique.length} elementi (${items.length - unique.length} duplicati rimossi)...`);
+
+  const now = admin.firestore.Timestamp.now();
+  const chunkSize = 400;
+  let savedTotal = 0, skippedTotal = 0;
+
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const batch = db.batch();
+    let batchCount = 0;
+    chunk.forEach(item => {
+      try {
+        const clean = sanitizeForFirestore(item);
+        clean.fetchedAt = now;
+        clean.timestamp = now;
+        const ref = db.collection('notizie').doc(item.id);
+        batch.set(ref, clean, { merge: true });
+        batchCount++;
+      } catch (e) { skippedTotal++; }
+    });
+    try {
+      await batch.commit();
+      savedTotal += batchCount;
+      console.log(`   → Batch ${Math.floor(i/chunkSize)+1}: ${batchCount} salvati`);
+    } catch (e) {
+      console.error(`   ❌ Batch fallito: ${e.message}`);
+      for (const item of chunk) {
         try {
-          const d = raw.toDate();
-          if (!isNaN(d.getTime())) return d;
-        } catch(e) {}
-      }
-      // Firestore Timestamp serializzato: {seconds, nanoseconds}
-      if (typeof raw === 'object' && typeof raw.seconds === 'number') {
-        const d = new Date(raw.seconds * 1000);
-        if (!isNaN(d.getTime())) return d;
-      }
-      // Stringa ISO o simile
-      let d = new Date(raw);
-      if (!isNaN(d.getTime())) return d;
-      // Formato italiano DD/MM/YYYY
-      const m = String(raw).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
-      if (m) {
-        let year = parseInt(m[3]);
-        if (year < 100) year += 2000;
-        d = new Date(year, parseInt(m[2]) - 1, parseInt(m[1]));
-        if (!isNaN(d.getTime())) return d;
+          const clean = sanitizeForFirestore(item);
+          clean.fetchedAt = now;
+          clean.timestamp = now;
+          await db.collection('notizie').doc(item.id).set(clean, { merge: true });
+          savedTotal++;
+        } catch (e2) { skippedTotal++; }
       }
     }
-    // Prova ad estrarre una data dal titolo (es. "12/03/2026" nel titolo)
-    if (item.titolo) {
-      const m = String(item.titolo).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
-      if (m) {
-        const d = new Date(parseInt(m[3]), parseInt(m[2]) - 1, parseInt(m[1]));
-        if (!isNaN(d.getTime())) return d;
-      }
-    }
-    return null;
   }
+  console.log(`✅ Totale salvati: ${savedTotal} (skipped: ${skippedTotal})`);
+}
 
-  function withinDateFilter(item) {
-    if (activeDateFilter === 'tutti' && !dateFrom && !dateTo) return true;
-    const d = parseItemDate(item);
-    if (!d) return true;
-    const now = new Date();
-    if (activeDateFilter === 'oggi') return d.toDateString() === now.toDateString();
-    if (activeDateFilter === '7')  return (now - d) <= 7*24*3600*1000;
-    if (activeDateFilter === '30') return (now - d) <= 30*24*3600*1000;
-    if (activeDateFilter === '90') return (now - d) <= 90*24*3600*1000;
-    if (activeDateFilter === 'custom') {
-      const from = dateFrom ? new Date(dateFrom) : null;
-      const to = dateTo ? new Date(dateTo + 'T23:59:59') : null;
-      if (from && d < from) return false;
-      if (to && d > to) return false;
-      return true;
-    }
-    return true;
+(async () => {
+  try {
+    const camera = await fetchCamera();
+    const senato = await fetchSenato();
+    await saveItems([...camera, ...senato]);
+    console.log('─'.repeat(50));
+    console.log('✅ Completato!');
+  } catch (err) {
+    console.error('❌ Errore fatale:', err);
+    process.exit(1);
   }
-
-  function renderHome() {
-    document.getElementById('breadcrumb').innerHTML = `<span onclick="goHome()">🏠 Home</span>`;
-    document.getElementById('app').innerHTML = `
-      <div class="level-grid">
-        <div class="level-card" onclick="selectSource('camera')">
-          <div class="icon">🏛</div><h2>Camera dei Deputati</h2>
-          <p>Atti, sedute, votazioni e agenda della Camera</p>
-        </div>
-        <div class="level-card" onclick="selectSource('senato')">
-          <div class="icon">⚖️</div><h2>Senato della Repubblica</h2>
-          <p>Disegni di legge, commissioni e resoconti del Senato</p>
-        </div>
-      </div>`;
-  }
-
-  async function selectSource(source) {
-    currentSource = source;
-    activeType = 'tutti'; activeStato = 'tutti'; activeDateFilter = 'tutti'; dateFrom = ''; dateTo = '';
-    const label = source === 'camera' ? '🏛 Camera dei Deputati' : '⚖️ Senato della Repubblica';
-    document.getElementById('breadcrumb').innerHTML = `<span onclick="goHome()">🏠 Home</span><span class="sep">›</span><span>${label}</span>`;
-    document.getElementById('app').innerHTML = `<div class="empty-state"><div class="spinner"></div><p style="margin-top:16px">Caricamento dati...</p></div>`;
-    await loadSource(source);
-  }
-
-  async function loadSource(source) {
-    try {
-      const snap = await getDocs(collection(db, 'notizie'));
-      allItems = [];
-      snap.forEach(doc => {
-        const d = doc.data();
-        if (d.fonte === source) {
-          allItems.push({ id: doc.id, ...d });
-          itemRegistry[doc.id] = { id: doc.id, ...d };
-        }
-      });
-      if (allItems.length > 0) console.log('📄 Primo elemento:', allItems[0]);
-
-      allItems.sort((a, b) => {
-        const da = parseItemDate(a);
-        const db2 = parseItemDate(b);
-        if (!da && !db2) return 0;
-        if (!da) return 1;
-        if (!db2) return -1;
-        return db2 - da;
-      });
-
-      if (allItems.length > 0) {
-        const latest = parseItemDate(allItems[0]);
-        if (latest) {
-          document.getElementById('last-update').textContent = 'Aggiornato: ' + latest.toLocaleString('it-IT', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
-        }
-      }
-      renderSource();
-    } catch(e) {
-      console.error('Errore loadSource:', e);
-      document.getElementById('app').innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Errore caricamento dati.<br><small>${e.message}</small></p></div>`;
-    }
-  }
-
-  function renderSource() {
-    const types = ['tutti', ...new Set(allItems.map(i => (i.tipo||'').toLowerCase()).filter(Boolean))];
-    const stati = ['tutti', 'proposto', 'in discussione', 'approvato'];
-    let filtered = allItems;
-    if (activeType !== 'tutti') filtered = filtered.filter(i => (i.tipo||'').toLowerCase() === activeType);
-    if (activeStato !== 'tutti') filtered = filtered.filter(i => (i.stato||'').toLowerCase() === activeStato);
-    filtered = filtered.filter(withinDateFilter);
-    const label = currentSource === 'camera' ? '🏛 Camera dei Deputati' : '⚖️ Senato della Repubblica';
-
-    const statoLabels = { 'tutti': 'Tutti', 'proposto': '📝 Proposte', 'in discussione': '💬 In discussione', 'approvato': '✅ Approvate' };
-
-    document.getElementById('app').innerHTML = `
-      <button class="btn-back" onclick="goHome()">← Torna alla home</button>
-      <div class="section-title">${label}</div>
-      <div id="filters">
-        <div class="filter-group">
-          <span class="filter-label">Stato:</span>
-          ${stati.map(s => `<button class="filter-btn ${s===activeStato?'active':''}" onclick="setStato('${s}')">${statoLabels[s]}</button>`).join('')}
-        </div>
-        <div class="filter-divider"></div>
-        <div class="filter-group">
-          <span class="filter-label">Tipo:</span>
-          ${types.map(t => `<button class="filter-btn ${t===activeType?'active':''}" onclick="setType('${t}')">${t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
-        </div>
-        <div class="filter-divider"></div>
-        <div class="filter-group">
-          <span class="filter-label">Periodo:</span>
-          ${['oggi','7','30','90','tutti'].map(v => {
-            const labels = {oggi:'Oggi','7':'7 giorni','30':'30 giorni','90':'90 giorni',tutti:'Tutto'};
-            return `<button class="filter-btn ${v===activeDateFilter&&activeDateFilter!=='custom'?'active':''}" onclick="setDateFilter('${v}')">${labels[v]}</button>`;
-          }).join('')}
-          <button class="filter-btn ${activeDateFilter==='custom'?'active':''}" onclick="setDateFilter('custom')">Personalizzato</button>
-        </div>
-        ${activeDateFilter==='custom' ? `
-        <div class="filter-group">
-          <span class="filter-label">Da:</span>
-          <input class="date-input" type="date" id="df-from" value="${dateFrom}" onchange="setCustomDate()">
-          <span class="filter-label">A:</span>
-          <input class="date-input" type="date" id="df-to" value="${dateTo}" onchange="setCustomDate()">
-        </div>` : ''}
-        <span id="count-badge">${filtered.length} di ${allItems.length} elementi</span>
-      </div>
-      <div id="news-list">
-        ${filtered.length === 0
-          ? `<div class="empty-state"><div class="icon">📭</div><p>Nessun elemento trovato.</p></div>`
-          : filtered.map(item => renderCard(item)).join('')}
-      </div>`;
-  }
-
-  function renderCard(item) {
-    const parsedDate = parseItemDate(item);
-    const dateStr = parsedDate ? parsedDate.toLocaleDateString('it-IT', {day:'numeric',month:'short',year:'numeric'}) : '';
-    const tipo = item.tipo || 'Atto';
-    const titolo = item.titolo || 'Atto parlamentare';
-    const link = item.link || '#';
-    const statoBadge = item.stato ? `<span class="stato-badge stato-${item.stato.replace(/\s+/g,'-')}">${item.stato}</span>` : '';
-    return `
-    <div class="news-card" id="card-${item.id}">
-      <div class="news-card-header">
-        <h3><a href="${link}" target="_blank" rel="noopener">${titolo}</a></h3>
-        <button class="btn-riassumi" id="btn-${item.id}" onclick="riassumi('${item.id}')" ${remainingToday()===0?'disabled':''}>✦ Riassumi</button>
-      </div>
-      <div class="news-meta">
-        ${statoBadge}
-        <span class="badge ${badgeClass(tipo)}">${tipo}</span>
-        ${dateStr ? `<span class="news-date">📅 ${dateStr}</span>` : ''}
-        ${item.fonte ? `<span class="news-source">· ${item.fonte === 'camera' ? 'Camera' : 'Senato'}</span>` : ''}
-      </div>
-      <div id="summary-${item.id}"></div>
-    </div>`;
-  }
-
-  window.riassumi = async function(id) {
-    console.log('🔘 Click Riassumi su', id);
-    if (remainingToday() === 0) return;
-    const item = itemRegistry[id];
-    if (!item) { console.error('Item non trovato:', id); return; }
-
-    const btn = document.getElementById('btn-' + id);
-    const summaryDiv = document.getElementById('summary-' + id);
-
-    if (summaryCache[id]) {
-      if (summaryDiv.innerHTML) { summaryDiv.innerHTML = ''; btn.textContent = '✦ Riassumi'; return; }
-      showSummary(id, summaryCache[id], btn, summaryDiv);
-      return;
-    }
-
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Analisi...';
-    summaryDiv.innerHTML = '<div class="ai-summary" style="font-style:italic;opacity:0.8">Scarico il documento ufficiale e lo analizzo… può richiedere 10-30 secondi per PDF grandi.</div>';
-
-    try {
-      console.log('📡 Chiamo Worker:', WORKER_URL);
-      const res = await fetch(WORKER_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          titolo: item.titolo || '',
-          descrizione: item.descrizione || '',
-          tipo: item.tipo || '',
-          link: item.link || ''
-        })
-      });
-      const data = await res.json();
-      console.log('📥 Worker response:', data);
-
-      if (!res.ok || data.error) {
-        throw new Error(data.error?.message || `HTTP ${res.status}`);
-      }
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) throw new Error('Risposta vuota dal Worker');
-
-      incrementUsage();
-      summaryCache[id] = text;
-      showSummary(id, text, btn, summaryDiv);
-    } catch(e) {
-      console.error('❌ Errore Riassumi:', e);
-      btn.disabled = false;
-      btn.textContent = '✦ Riassumi';
-      summaryDiv.innerHTML = `<div class="ai-summary" style="border-color:var(--red)">⚠️ Errore: ${e.message}<br><small style="opacity:0.7">Apri la console (F12) per dettagli.</small></div>`;
-    }
-  };
-
-  function showSummary(id, text, btn, summaryDiv) {
-    const rem = remainingToday();
-    summaryDiv.innerHTML = `
-      <div class="ai-summary">
-        <div class="ai-label">✦ ANALISI AI</div>
-        ${text.replace(/\n/g,'<br>')}
-        ${rem <= 3 ? `<div class="ai-limit-warn">Riassunti rimanenti oggi: ${rem}/${DAILY_LIMIT}</div>` : ''}
-      </div>`;
-    btn.disabled = false;
-    btn.textContent = '✦ Nascondi';
-    if (remainingToday() === 0) {
-      document.querySelectorAll('.btn-riassumi').forEach(b => { if (b.id !== 'btn-'+id) b.disabled = true; });
-    }
-  }
-
-  window.setType = function(t) { activeType = t; renderSource(); };
-  window.setStato = function(s) { activeStato = s; renderSource(); };
-  window.setDateFilter = function(v) { activeDateFilter = v; if(v!=='custom'){dateFrom='';dateTo='';} renderSource(); };
-  window.setCustomDate = function() {
-    dateFrom = document.getElementById('df-from')?.value || '';
-    dateTo = document.getElementById('df-to')?.value || '';
-    renderSource();
-  };
-  window.selectSource = selectSource;
-  window.goHome = function() { renderHome(); };
-
-  renderHome();
-</script>
-</body>
-</html>
+})();
