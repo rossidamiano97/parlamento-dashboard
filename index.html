@@ -89,7 +89,7 @@
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
   import { getFirestore, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
 
-  console.log('🏛 Dashboard Parlamento v6 caricato (Worker legge il contenuto reale)');
+  console.log('🏛 Dashboard Parlamento v7 caricato (date reali, non timestamp fetch)');
 
   const firebaseConfig = {
     apiKey: "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
@@ -127,8 +127,10 @@
   }
 
   // PARSER DATE ROBUSTO - gestisce Firestore Timestamp, ISO, DD/MM/YYYY
+  // NOTA: NON includiamo 'timestamp' e 'fetchedAt' perche' sono momento del fetch,
+  // non data reale dell'atto.
   function parseItemDate(item) {
-    const candidates = [item.data, item.pubDate, item.dataPubblicazione, item.timestamp, item.fetchedAt];
+    const candidates = [item.data, item.pubDate, item.dataPubblicazione];
     for (const raw of candidates) {
       if (!raw) continue;
       // Firestore Timestamp: oggetto con metodo .toDate()
@@ -152,6 +154,14 @@
         let year = parseInt(m[3]);
         if (year < 100) year += 2000;
         d = new Date(year, parseInt(m[2]) - 1, parseInt(m[1]));
+        if (!isNaN(d.getTime())) return d;
+      }
+    }
+    // Prova ad estrarre una data dal titolo (es. "12/03/2026" nel titolo)
+    if (item.titolo) {
+      const m = String(item.titolo).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+      if (m) {
+        const d = new Date(parseInt(m[3]), parseInt(m[2]) - 1, parseInt(m[1]));
         if (!isNaN(d.getTime())) return d;
       }
     }
