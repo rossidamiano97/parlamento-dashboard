@@ -17,7 +17,7 @@ console.log('─'.repeat(50));
 const UA = { 'User-Agent': 'Mozilla/5.0 (compatible; ParlamentoDashboard/1.0; +https://rossidamiano97.github.io/parlamento-dashboard)' };
 
 async function safeFetch(url, opts = {}) {
-  const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(15000), ...opts });
+  const res = await fetch(url, { headers: UA, ...opts });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res;
 }
