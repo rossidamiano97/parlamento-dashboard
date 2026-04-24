@@ -1,6 +1,6 @@
 // ========================================================================
-// PARLAMENTO DASHBOARD — Fetch Data v7
-// Fix: date valide + scraping Camera robusto
+// PARLAMENTO DASHBOARD — Fetch Data v8
+// Fix Camera: scraping comunicazione.camera.it verificato
 // ========================================================================
 
 import admin from 'firebase-admin';
@@ -10,7 +10,7 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
-console.log('🏛  Parlamento Dashboard v7 — Fetch avviato');
+console.log('🏛  Parlamento Dashboard v8 — Fetch avviato');
 console.log('📅 ', new Date().toLocaleString('it-IT'));
 console.log('─'.repeat(50));
 
@@ -26,16 +26,27 @@ function makeId(prefix, str) {
   return prefix + '-' + String(str).replace(/https?:\/\//, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 80);
 }
 
-// Ritorna una Date valida o null (scarta date NaN o oltre 10 anni dal presente)
 function safeDate(raw) {
   if (!raw) return null;
   try {
     const d = new Date(raw);
     if (isNaN(d.getTime())) return null;
-    const year = d.getFullYear();
-    if (year < 2000 || year > 2035) return null;
+    const y = d.getFullYear();
+    if (y < 2000 || y > 2035) return null;
     return d;
   } catch (e) { return null; }
+}
+
+// Parse data italiana "24 Aprile 2026" o "24 apr 2026"
+function parseItalianDate(str) {
+  const mesi = { 'gennaio':0,'gen':0,'febbraio':1,'feb':1,'marzo':2,'mar':2,'aprile':3,'apr':3,
+    'maggio':4,'mag':4,'giugno':5,'giu':5,'luglio':6,'lug':6,'agosto':7,'ago':7,
+    'settembre':8,'set':8,'ottobre':9,'ott':9,'novembre':10,'nov':10,'dicembre':11,'dic':11 };
+  const m = String(str).toLowerCase().match(/(\d{1,2})\s+([a-z]+)\s+(\d{4})/);
+  if (!m) return null;
+  const mese = mesi[m[2]];
+  if (mese === undefined) return null;
+  return new Date(parseInt(m[3]), mese, parseInt(m[1]));
 }
 
 async function parseRSS(url, fonte, tipo) {
@@ -46,8 +57,8 @@ async function parseRSS(url, fonte, tipo) {
   const items = [];
   rssItems.slice(0, 50).forEach(it => {
     const titolo = (it.title?.[0] || '').replace(/<[^>]+>/g, '').trim();
-    const link   = (it.link?.[0] || it['rss:link']?.[0] || '').trim();
-    const descr  = (it.description?.[0] || '').replace(/<[^>]+>/g, '').trim();
+    const link = (it.link?.[0] || it['rss:link']?.[0] || '').trim();
+    const descr = (it.description?.[0] || '').replace(/<[^>]+>/g, '').trim();
     const pubDate = it.pubDate?.[0] || it['dc:date']?.[0] || '';
     if (!titolo) return;
     items.push({
@@ -62,126 +73,97 @@ async function parseRSS(url, fonte, tipo) {
 }
 
 // ═══════════════════════════════════════════════════════
-// CAMERA — Retry con delay + scraping avanzato
+// CAMERA — Scraping di comunicazione.camera.it (verificato)
 // ═══════════════════════════════════════════════════════
 
-// Attende N millisecondi
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-async function fetchCameraRSS(url, tipo) {
-  // Retry fino a 3 volte se 503
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      return await parseRSS(url, 'camera', tipo);
-    } catch (e) {
-      if (e.message.includes('503') && attempt < 3) {
-        console.log(`      ⏳ 503, retry ${attempt}/3...`);
-        await sleep(2000 * attempt);
-        continue;
-      }
-      throw e;
-    }
-  }
-  return [];
+function classifyTipo(titolo, link) {
+  const t = titolo.toLowerCase();
+  if (/question time|qt/i.test(t)) return 'seduta';
+  if (/decreto|decreto-legge|approvazione definitiva/i.test(t)) return 'disegno di legge';
+  if (/audizione|audizioni/i.test(t)) return 'commissione';
+  if (/disegno di legge|pdl|progetto di legge|ddl/i.test(t)) return 'disegno di legge';
+  if (/interrogazione|interpellanz/i.test(t)) return 'mozione';
+  if (/mozione|risoluzione/i.test(t)) return 'mozione';
+  if (/ordine del giorno|odg|calendario/i.test(t)) return 'agenda';
+  if (/resoconto/i.test(t)) return 'resoconto';
+  if (/commissione/i.test(t)) return 'commissione';
+  if (/aula|assemblea|seduta|fiducia/i.test(t)) return 'seduta';
+  if (/conferenza stampa|press/i.test(t)) return 'comunicato';
+  return 'comunicato';
 }
 
-const CAMERA_FEEDS = [
-  { url: 'https://comunicazione.camera.it/sindacato/notizie?output=rss', tipo: 'comunicato' },
-  { url: 'https://www.camera.it/leg19/rss.rss?tipo=19', tipo: 'comunicato' },
-  { url: 'https://www.camera.it/leg19/rss?tipo=192', tipo: 'resoconto' },
-  { url: 'https://www.camera.it/leg19/rss?tipo=195', tipo: 'agenda' },
-  { url: 'https://www.camera.it/leg19/rss?tipo=196', tipo: 'commissione' },
-  { url: 'https://www.camera.it/leg19/rss?tipo=197', tipo: 'disegno di legge' },
-  { url: 'https://www.camera.it/leg19/rss?tipo=198', tipo: 'comunicato' },
-];
+async function fetchCameraPage(url, label) {
+  const items = [];
+  try {
+    const res = await safeFetch(url);
+    const html = await res.text();
+    // Pattern: estrai link con titolo (tipicamente link "/archivio-prima-pagina/..." o simili con ampio testo)
+    // Cerca sequenze tipo: href="URL" title="TITOLO"> oppure href="URL">TITOLO</a>
+    const seen = new Set();
+
+    // Pattern 1: link con title attribute
+    const p1 = [...html.matchAll(/<a[^>]+href="([^"]*(?:archivio-prima-pagina|comunicati-stampa|eventi|comma|oggi-in)[^"]*)"[^>]*title="([^"]{15,400})"/gi)];
+    p1.forEach(([_, href, titolo]) => {
+      const clean = titolo.replace(/\s+/g, ' ').trim();
+      if (!clean || seen.has(clean)) return;
+      seen.add(clean);
+      const link = href.startsWith('http') ? href : `https://comunicazione.camera.it${href}`;
+      const tipo = classifyTipo(clean, link);
+      items.push({
+        id: makeId(`camera-${tipo}`, link),
+        fonte: 'camera', tipo, titolo: clean,
+        descrizione: '', link,
+        data: new Date()
+      });
+    });
+
+    // Pattern 2: link con testo lungo fra tag
+    const p2 = [...html.matchAll(/<a[^>]+href="([^"]*(?:archivio-prima-pagina|comunicati-stampa|eventi|comma|oggi-in)[^"]*)"[^>]*>\s*([^<]{20,400})\s*<\/a>/gi)];
+    p2.forEach(([_, href, titolo]) => {
+      const clean = titolo.replace(/\s+/g, ' ').trim();
+      if (!clean || seen.has(clean)) return;
+      if (/^(guarda|diretta|scarica|leggi|vai|visualizza|apri|condividi)/i.test(clean)) return;
+      seen.add(clean);
+      const link = href.startsWith('http') ? href : `https://comunicazione.camera.it${href}`;
+      const tipo = classifyTipo(clean, link);
+      items.push({
+        id: makeId(`camera-${tipo}`, link),
+        fonte: 'camera', tipo, titolo: clean,
+        descrizione: '', link,
+        data: new Date()
+      });
+    });
+
+    console.log(`   ✓ ${label} (${seen.size})`);
+  } catch (e) {
+    console.warn(`   ⚠ ${label}: ${e.message}`);
+  }
+  return items;
+}
 
 async function fetchCamera() {
   const items = [];
   console.log('📥 Camera dei Deputati:');
 
-  for (const feed of CAMERA_FEEDS) {
-    try {
-      const res = await fetchCameraRSS(feed.url, feed.tipo);
-      items.push(...res);
-      console.log(`   ✓ ${feed.tipo} (${res.length})`);
-    } catch (e) {
-      console.warn(`   ⚠ ${feed.tipo}: ${e.message}`);
-    }
-  }
+  // Homepage comunicazione.camera.it (verificata, contiene 30+ notizie aggiornate)
+  items.push(...await fetchCameraPage('https://comunicazione.camera.it/', 'homepage comunicazione'));
+  // Archivio prima pagina (storico)
+  items.push(...await fetchCameraPage('https://comunicazione.camera.it/archivio-prima-pagina', 'archivio prima pagina'));
+  // Comunicati stampa
+  items.push(...await fetchCameraPage('https://comunicazione.camera.it/comunicati-stampa', 'comunicati stampa'));
+  // Oggi in Commissione
+  items.push(...await fetchCameraPage('https://comunicazione.camera.it/oggi-in-commissione', 'oggi in commissione'));
+  // Comm@ (anteprima lavori)
+  items.push(...await fetchCameraPage('https://comunicazione.camera.it/comma', 'comm@'));
 
-  // Fallback 1: homepage comunicazione.camera.it
-  if (items.length === 0) {
-    console.log('   📡 Fallback scraping comunicazione.camera.it...');
-    try {
-      const res = await safeFetch('https://comunicazione.camera.it/');
-      const html = await res.text();
-      // Pattern più aperto: qualsiasi link con testo lungo ≥ 20 char
-      const matches = [...html.matchAll(/<a[^>]+href="([^"]+(?:node|article|notiz)[^"]*)"[^>]*>\s*([^<]{20,300})\s*<\/a>/gi)];
-      const seen = new Set();
-      matches.forEach(([_, href, testo]) => {
-        const titolo = testo.replace(/\s+/g, ' ').trim();
-        if (!titolo || seen.has(titolo)) return;
-        seen.add(titolo);
-        const link = href.startsWith('http') ? href : `https://comunicazione.camera.it${href}`;
-        items.push({
-          id: makeId('camera-comunicato', link),
-          fonte: 'camera', tipo: 'comunicato',
-          titolo, descrizione: '', link,
-          data: new Date()
-        });
-      });
-      console.log(`   ✓ comunicazione.camera.it (${seen.size})`);
-    } catch (e) {
-      console.warn(`   ⚠ fallback 1: ${e.message}`);
-    }
-  }
-
-  // Fallback 2: pagina lavori assemblea
-  if (items.length < 5) {
-    console.log('   📡 Fallback scraping lavori Camera...');
-    try {
-      await sleep(1500);
-      const res = await safeFetch('https://www.camera.it/leg19/1');
-      const html = await res.text();
-      // Estrai qualsiasi link con titolo significativo
-      const matches = [...html.matchAll(/<a[^>]+href="(\/leg19\/[^"]+)"[^>]*>\s*([^<]{25,300})\s*<\/a>/gi)];
-      const seen = new Set();
-      matches.slice(0, 50).forEach(([_, href, testo]) => {
-        const titolo = testo.replace(/\s+/g, ' ').trim();
-        if (!titolo || seen.has(titolo)) return;
-        // Filtra navigazione
-        if (/^(home|menu|cerca|chi|dove|contatti|trasparen|archivio|legislatur|indietro)/i.test(titolo)) return;
-        if (titolo.length > 250) return;
-        seen.add(titolo);
-        const link = `https://www.camera.it${href}`;
-        // Classifica il tipo dal titolo/link
-        let tipo = 'comunicato';
-        if (/seduta|assemblea|aula/i.test(titolo)) tipo = 'seduta';
-        else if (/progetto di legge|disegno di legge|pdl|ddl/i.test(titolo)) tipo = 'disegno di legge';
-        else if (/commissione/i.test(titolo)) tipo = 'commissione';
-        else if (/ordine del giorno|odg|calendario/i.test(titolo)) tipo = 'agenda';
-        else if (/resoconto/i.test(titolo)) tipo = 'resoconto';
-        else if (/interrogazio|mozione|interpellan/i.test(titolo)) tipo = 'mozione';
-
-        items.push({
-          id: makeId(`camera-${tipo}`, link),
-          fonte: 'camera', tipo,
-          titolo, descrizione: '', link,
-          data: new Date()
-        });
-      });
-      console.log(`   ✓ lavori Camera (${seen.size})`);
-    } catch (e) {
-      console.warn(`   ⚠ fallback 2: ${e.message}`);
-    }
-  }
-
-  console.log(`   ✅ Camera totale: ${items.length} elementi`);
-  return items;
+  // Deduplica per ID all'interno della Camera
+  const dedup = Object.values(Object.fromEntries(items.map(i => [i.id, i])));
+  console.log(`   ✅ Camera totale: ${dedup.length} elementi unici`);
+  return dedup;
 }
 
 // ═══════════════════════════════════════════════════════
-// SENATO — Feed RSS ufficiali
+// SENATO — Feed RSS ufficiali (funzionanti)
 // ═══════════════════════════════════════════════════════
 
 const SENATO_FEEDS = [
@@ -217,7 +199,7 @@ async function fetchSenato() {
 }
 
 // ═══════════════════════════════════════════════════════
-// SAVE TO FIRESTORE — con validazione dati
+// SAVE TO FIRESTORE
 // ═══════════════════════════════════════════════════════
 
 function sanitizeForFirestore(item) {
@@ -225,16 +207,13 @@ function sanitizeForFirestore(item) {
   for (const [k, v] of Object.entries(item)) {
     if (v === undefined) continue;
     if (v === null) { clean[k] = null; continue; }
-    // Date: valida + converti a Timestamp
     if (v instanceof Date) {
       if (isNaN(v.getTime())) { clean[k] = null; continue; }
       clean[k] = admin.firestore.Timestamp.fromDate(v);
       continue;
     }
-    // Stringhe/numeri/bool
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
       clean[k] = v;
-      continue;
     }
   }
   return clean;
@@ -252,14 +231,12 @@ async function saveItems(items) {
 
   const now = admin.firestore.Timestamp.now();
   const chunkSize = 400;
-  let savedTotal = 0;
-  let skippedTotal = 0;
+  let savedTotal = 0, skippedTotal = 0;
 
   for (let i = 0; i < unique.length; i += chunkSize) {
     const chunk = unique.slice(i, i + chunkSize);
     const batch = db.batch();
     let batchCount = 0;
-
     chunk.forEach(item => {
       try {
         const clean = sanitizeForFirestore(item);
@@ -269,19 +246,15 @@ async function saveItems(items) {
         batch.set(ref, clean, { merge: true });
         batchCount++;
       } catch (e) {
-        console.warn(`   ⚠ Skipped ${item.id}: ${e.message}`);
         skippedTotal++;
       }
     });
-
     try {
       await batch.commit();
       savedTotal += batchCount;
       console.log(`   → Batch ${Math.floor(i/chunkSize)+1}: ${batchCount} salvati`);
     } catch (e) {
-      console.error(`   ❌ Batch ${Math.floor(i/chunkSize)+1} fallito: ${e.message}`);
-      // Prova a salvare uno alla volta per isolare il problema
-      console.log(`      Salvo uno alla volta...`);
+      console.error(`   ❌ Batch fallito: ${e.message}`);
       for (const item of chunk) {
         try {
           const clean = sanitizeForFirestore(item);
@@ -289,19 +262,12 @@ async function saveItems(items) {
           clean.timestamp = now;
           await db.collection('notizie').doc(item.id).set(clean, { merge: true });
           savedTotal++;
-        } catch (itemErr) {
-          console.warn(`      ⚠ ${item.id}: ${itemErr.message}`);
-          skippedTotal++;
-        }
+        } catch (e2) { skippedTotal++; }
       }
     }
   }
   console.log(`✅ Totale salvati: ${savedTotal} (skipped: ${skippedTotal})`);
 }
-
-// ═══════════════════════════════════════════════════════
-// MAIN
-// ═══════════════════════════════════════════════════════
 
 (async () => {
   try {
