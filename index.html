@@ -89,7 +89,7 @@
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
   import { getFirestore, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
 
-  console.log('🏛 Dashboard Parlamento v4 caricato');
+  console.log('🏛 Dashboard Parlamento v5 caricato (Timestamp fix + gemini-2.5-flash)');
 
   const firebaseConfig = {
     apiKey: "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
@@ -126,13 +126,27 @@
     return 'badge-default';
   }
 
-  // PARSER DATE ROBUSTO
+  // PARSER DATE ROBUSTO - gestisce Firestore Timestamp, ISO, DD/MM/YYYY
   function parseItemDate(item) {
-    const candidates = [item.data, item.pubDate, item.dataPubblicazione, item.timestamp];
+    const candidates = [item.data, item.pubDate, item.dataPubblicazione, item.timestamp, item.fetchedAt];
     for (const raw of candidates) {
       if (!raw) continue;
+      // Firestore Timestamp: oggetto con metodo .toDate()
+      if (typeof raw === 'object' && typeof raw.toDate === 'function') {
+        try {
+          const d = raw.toDate();
+          if (!isNaN(d.getTime())) return d;
+        } catch(e) {}
+      }
+      // Firestore Timestamp serializzato: {seconds, nanoseconds}
+      if (typeof raw === 'object' && typeof raw.seconds === 'number') {
+        const d = new Date(raw.seconds * 1000);
+        if (!isNaN(d.getTime())) return d;
+      }
+      // Stringa ISO o simile
       let d = new Date(raw);
       if (!isNaN(d.getTime())) return d;
+      // Formato italiano DD/MM/YYYY
       const m = String(raw).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
       if (m) {
         let year = parseInt(m[3]);
