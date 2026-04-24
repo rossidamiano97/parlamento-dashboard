@@ -216,7 +216,7 @@
 <!-- Firebase SDK -->
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
-  import { getFirestore, collection, getDocs, query, orderBy, limit } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
+  import { getFirestore, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
 
   const firebaseConfig = {
     apiKey:            "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
@@ -327,8 +327,7 @@
 
   async function loadSource(source) {
     try {
-      const q = query(collection(db, 'notizie'), orderBy('timestamp', 'desc'), limit(300));
-      const snap = await getDocs(q);
+      const snap = await getDocs(collection(db, 'notizie'));
       allItems = [];
       snap.forEach(doc => {
         const d = doc.data();
@@ -336,6 +335,12 @@
           allItems.push({ id: doc.id, ...d });
           itemRegistry[doc.id] = { id: doc.id, ...d };
         }
+      });
+      // ordina per data decrescente in JS (no indice Firestore necessario)
+      allItems.sort((a, b) => {
+        const da = a.timestamp || a.data || '';
+        const db2 = b.timestamp || b.data || '';
+        return da > db2 ? -1 : 1;
       });
 
       // update last-update
