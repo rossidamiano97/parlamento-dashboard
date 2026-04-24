@@ -57,6 +57,13 @@
     .badge-agenda { background: #2a2820; color: #d4d04a; border: 1px solid #5a5020; }
     .badge-default { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
     .news-date, .news-source { font-size: 0.72rem; color: var(--text2); }
+    .stato-badge {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;
+      padding: 3px 10px; border-radius: 20px; text-transform: uppercase;
+    }
+    .stato-proposto { background: rgba(74, 143, 212, 0.15); color: #6ab4f4; border: 1px solid #2a5a8a; }
+    .stato-in-discussione { background: rgba(201, 168, 76, 0.15); color: var(--accent); border: 1px solid var(--accent2); }
+    .stato-approvato { background: rgba(76, 175, 130, 0.15); color: #5ec997; border: 1px solid #2a6a4a; }
     .btn-riassumi { background: transparent; border: 1px solid var(--accent2); color: var(--accent); border-radius: 6px; padding: 4px 10px; font-size: 0.72rem; cursor: pointer; white-space: nowrap; transition: all 0.15s; flex-shrink: 0; }
     .btn-riassumi:hover { background: var(--accent2); }
     .btn-riassumi:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -89,7 +96,7 @@
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
   import { getFirestore, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
 
-  console.log('🏛 Dashboard Parlamento v7 caricato (date reali, non timestamp fetch)');
+  console.log('🏛 Dashboard Parlamento v8 caricato (filtro stato: proposte/in discussione/approvate)');
 
   const firebaseConfig = {
     apiKey: "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
@@ -109,6 +116,7 @@
   let allItems = [];
   let currentSource = null;
   let activeType = 'tutti';
+  let activeStato = 'tutti';
   let activeDateFilter = 'tutti';
   let dateFrom = '', dateTo = '';
   const itemRegistry = {};
@@ -204,7 +212,7 @@
 
   async function selectSource(source) {
     currentSource = source;
-    activeType = 'tutti'; activeDateFilter = 'tutti'; dateFrom = ''; dateTo = '';
+    activeType = 'tutti'; activeStato = 'tutti'; activeDateFilter = 'tutti'; dateFrom = ''; dateTo = '';
     const label = source === 'camera' ? '🏛 Camera dei Deputati' : '⚖️ Senato della Repubblica';
     document.getElementById('breadcrumb').innerHTML = `<span onclick="goHome()">🏠 Home</span><span class="sep">›</span><span>${label}</span>`;
     document.getElementById('app').innerHTML = `<div class="empty-state"><div class="spinner"></div><p style="margin-top:16px">Caricamento dati...</p></div>`;
@@ -248,15 +256,24 @@
 
   function renderSource() {
     const types = ['tutti', ...new Set(allItems.map(i => (i.tipo||'').toLowerCase()).filter(Boolean))];
+    const stati = ['tutti', 'proposto', 'in discussione', 'approvato'];
     let filtered = allItems;
     if (activeType !== 'tutti') filtered = filtered.filter(i => (i.tipo||'').toLowerCase() === activeType);
+    if (activeStato !== 'tutti') filtered = filtered.filter(i => (i.stato||'').toLowerCase() === activeStato);
     filtered = filtered.filter(withinDateFilter);
     const label = currentSource === 'camera' ? '🏛 Camera dei Deputati' : '⚖️ Senato della Repubblica';
+
+    const statoLabels = { 'tutti': 'Tutti', 'proposto': '📝 Proposte', 'in discussione': '💬 In discussione', 'approvato': '✅ Approvate' };
 
     document.getElementById('app').innerHTML = `
       <button class="btn-back" onclick="goHome()">← Torna alla home</button>
       <div class="section-title">${label}</div>
       <div id="filters">
+        <div class="filter-group">
+          <span class="filter-label">Stato:</span>
+          ${stati.map(s => `<button class="filter-btn ${s===activeStato?'active':''}" onclick="setStato('${s}')">${statoLabels[s]}</button>`).join('')}
+        </div>
+        <div class="filter-divider"></div>
         <div class="filter-group">
           <span class="filter-label">Tipo:</span>
           ${types.map(t => `<button class="filter-btn ${t===activeType?'active':''}" onclick="setType('${t}')">${t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
@@ -292,6 +309,7 @@
     const tipo = item.tipo || 'Atto';
     const titolo = item.titolo || 'Atto parlamentare';
     const link = item.link || '#';
+    const statoBadge = item.stato ? `<span class="stato-badge stato-${item.stato.replace(/\s+/g,'-')}">${item.stato}</span>` : '';
     return `
     <div class="news-card" id="card-${item.id}">
       <div class="news-card-header">
@@ -299,6 +317,7 @@
         <button class="btn-riassumi" id="btn-${item.id}" onclick="riassumi('${item.id}')" ${remainingToday()===0?'disabled':''}>✦ Riassumi</button>
       </div>
       <div class="news-meta">
+        ${statoBadge}
         <span class="badge ${badgeClass(tipo)}">${tipo}</span>
         ${dateStr ? `<span class="news-date">📅 ${dateStr}</span>` : ''}
         ${item.fonte ? `<span class="news-source">· ${item.fonte === 'camera' ? 'Camera' : 'Senato'}</span>` : ''}
@@ -374,6 +393,7 @@
   }
 
   window.setType = function(t) { activeType = t; renderSource(); };
+  window.setStato = function(s) { activeStato = s; renderSource(); };
   window.setDateFilter = function(v) { activeDateFilter = v; if(v!=='custom'){dateFrom='';dateTo='';} renderSource(); };
   window.setCustomDate = function() {
     dateFrom = document.getElementById('df-from')?.value || '';
