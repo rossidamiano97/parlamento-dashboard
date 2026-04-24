@@ -89,7 +89,7 @@
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
   import { getFirestore, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
 
-  console.log('🏛 Dashboard Parlamento v5 caricato (Timestamp fix + gemini-2.5-flash)');
+  console.log('🏛 Dashboard Parlamento v6 caricato (Worker legge il contenuto reale)');
 
   const firebaseConfig = {
     apiKey: "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
@@ -314,24 +314,19 @@
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>Analisi...';
-    summaryDiv.innerHTML = '';
-
-    const prompt = `Sei un assistente che spiega in modo chiaro atti del parlamento italiano.
-Atto: "${item.titolo || ''}"
-Descrizione: "${item.descrizione || ''}"
-Tipo: ${item.tipo || ''}
-
-Rispondi in italiano con:
-1. Cosa tratta questo atto in 2-3 frasi semplici, comprensibili a tutti.
-2. Potenziale impatto sui cittadini (1-2 frasi).
-Sii conciso e diretto.`;
+    summaryDiv.innerHTML = '<div class="ai-summary" style="font-style:italic;opacity:0.8">Scarico il documento ufficiale e lo analizzo… può richiedere 10-30 secondi per PDF grandi.</div>';
 
     try {
       console.log('📡 Chiamo Worker:', WORKER_URL);
       const res = await fetch(WORKER_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        body: JSON.stringify({
+          titolo: item.titolo || '',
+          descrizione: item.descrizione || '',
+          tipo: item.tipo || '',
+          link: item.link || ''
+        })
       });
       const data = await res.json();
       console.log('📥 Worker response:', data);
