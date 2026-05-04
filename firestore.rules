@@ -9,6 +9,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Parlamentari: lettura pubblica, scrittura solo da service account
+    match /parlamentari/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // Metadata di sistema: lettura pubblica
     match /meta/{docId} {
       allow read: if true;
