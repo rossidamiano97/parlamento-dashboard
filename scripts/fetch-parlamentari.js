@@ -1,7 +1,7 @@
 // ========================================================================
-// PARLAMENTO DASHBOARD — Fetch Parlamentari v3 (Phase 1: lista + gruppi)
-// v3 — Retry su 503 per Camera, query diagnostica predicati Senato,
-//      query gruppo Senato corretta basata su mandato (non senatore)
+// PARLAMENTO DASHBOARD — Fetch Parlamentari v4 (Phase 1: lista + gruppi)
+// v4 — Senato: usa ocd:aderisce (predicato Camera riusato dal Senato)
+//      come scoperto dalla diagnostica nei log v3.
 // ========================================================================
 
 import admin from 'firebase-admin';
@@ -10,7 +10,7 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
-console.log('🏛  Parlamentari — Fetch v3 (Phase 1) avviato');
+console.log('🏛  Parlamentari — Fetch v4 (Phase 1) avviato');
 console.log('📅 ', new Date().toLocaleString('it-IT'));
 console.log('─'.repeat(50));
 
@@ -51,7 +51,7 @@ function makeId(prefix, str) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ═══════════════════════════════════════════════════════
-// SPARQL helper con retry (necessario per dati.camera.it che dà 503 spesso)
+// SPARQL helper con retry
 // ═══════════════════════════════════════════════════════
 async function runSPARQL(endpoint, query, opts = {}) {
   const { retries = 3, retryDelay = 5000 } = opts;
@@ -76,7 +76,6 @@ async function runSPARQL(endpoint, query, opts = {}) {
     } catch (e) {
       lastErr = e;
       if (attempt < retries && /network|fetch failed|timeout/i.test(e.message)) {
-        console.log(`   ↻ Tentativo ${attempt}/${retries} errore di rete, retry...`);
         await sleep(retryDelay);
         continue;
       }
@@ -155,30 +154,38 @@ async function fetchCameraDeputati() {
 
 // ═══════════════════════════════════════════════════════
 // SENATO — SPARQL su dati.senato.it
-// Step A: lista senatori (query semplice, già funziona)
-// Step B: query DIAGNOSTICA per scoprire predicati gruppo
-// Step C: query gruppo + match con cognome/nome
+// FIX v4: usa ocd:aderisce (il Senato riusa il predicato Camera).
+// La diagnostica v3 ha rivelato che ogni senatore ha più nodi
+// ocd:aderisce (uno per legislatura). Filtriamo per quello senza
+// dataFine per avere il gruppo corrente. Inoltre esploriamo il
+// blank node con una seconda diagnostica.
 // ═══════════════════════════════════════════════════════
 const SPARQL_SENATO = 'http://dati.senato.it/sparql';
 
-async function diagnoseSenatoPredicates(senatoreUri) {
-  console.log(`   🔬 Diagnostica predicati per ${senatoreUri}...`);
+async function diagnoseAdesione(senatoreUri) {
+  console.log(`   🔬 Diagnostica blank node ocd:aderisce per ${senatoreUri}...`);
   const query = `
+    PREFIX ocd: <http://dati.camera.it/ocd/>
     SELECT DISTINCT ?p ?o WHERE {
-      <${senatoreUri}> ?p ?o .
-    } LIMIT 100
+      <${senatoreUri}> ocd:aderisce ?adesione .
+      ?adesione ?p ?o .
+    } LIMIT 60
   `;
   try {
     const rows = await runSPARQL(SPARQL_SENATO, query, { retries: 2 });
-    console.log(`   📋 Predicati trovati per il senatore (${rows.length}):`);
+    console.log(`   📋 Predicati DENTRO il blank node aderisce (${rows.length}):`);
+    const seen = new Set();
     rows.forEach(r => {
       const p = r.p?.value || '';
       const o = r.o?.value || '';
-      const oShort = o.length > 80 ? o.slice(0, 80) + '...' : o;
+      const oShort = o.length > 100 ? o.slice(0, 100) + '...' : o;
+      const key = `${p}::${oShort}`;
+      if (seen.has(key)) return;
+      seen.add(key);
       console.log(`      ${p}  →  ${oShort}`);
     });
   } catch (e) {
-    console.log(`   ⚠ Diagnostica predicati fallita: ${e.message}`);
+    console.log(`   ⚠ Diagnostica adesione fallita: ${e.message}`);
   }
 }
 
@@ -186,7 +193,7 @@ async function fetchSenatoSenatori() {
   console.log('📥 Senato della Repubblica (SPARQL):');
   const items = [];
 
-  // Step A: lista senatori (query base che sappiamo funzionare)
+  // Step A: lista senatori (sappiamo che funziona)
   const queryLista = `
     PREFIX osr: <http://dati.senato.it/osr/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
@@ -209,14 +216,18 @@ async function fetchSenatoSenatori() {
     return items;
   }
 
-  // Step B: diagnostica predicati su un senatore di esempio (solo per log)
+  // Step B: diagnostica del blank node aderisce per capire la struttura
   if (rows.length > 0) {
-    await diagnoseSenatoPredicates(rows[0].senatore.value);
+    await diagnoseAdesione(rows[0].senatore.value);
   }
 
-  // Step C: cerca i gruppi separatamente con varie strategie
-  // Strategia 1: tramite gruppoParlamentare diretto
-  const queryGruppo1 = `
+  // Step C: query gruppi tentando varie strategie sul blank node aderisce.
+  // Tentiamo simultaneamente diversi predicati interni al blank node.
+  const gruppiBySenatore = {};
+
+  // Strategia A: rif_gruppoParlamentare (predicato Camera classico)
+  const queryA = `
+    PREFIX ocd: <http://dati.camera.it/ocd/>
     PREFIX osr: <http://dati.senato.it/osr/>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX dc: <http://purl.org/dc/elements/1.1/>
@@ -224,32 +235,51 @@ async function fetchSenatoSenatori() {
       ?senatore a osr:Senatore .
       ?senatore osr:mandato ?mandato .
       ?mandato osr:legislatura 19 .
-      ?mandato osr:gruppo ?gruppo .
+      ?senatore ocd:aderisce ?adesione .
+      ?adesione ocd:rif_gruppoParlamentare ?gruppo .
+      FILTER NOT EXISTS { ?adesione ocd:dataFine ?df }
       OPTIONAL { ?gruppo rdfs:label ?gruppoNome }
       OPTIONAL { ?gruppo dc:title ?gruppoNome }
     }
   `;
 
-  // Strategia 2: tramite componenteGruppo
-  const queryGruppo2 = `
+  // Strategia B: predicato osr-specific se esiste
+  const queryB = `
+    PREFIX ocd: <http://dati.camera.it/ocd/>
     PREFIX osr: <http://dati.senato.it/osr/>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX dc: <http://purl.org/dc/elements/1.1/>
     SELECT DISTINCT ?senatore ?gruppoNome WHERE {
       ?senatore a osr:Senatore .
-      ?componente osr:senatore ?senatore .
-      ?componente osr:gruppo ?gruppo .
-      FILTER NOT EXISTS { ?componente osr:fineComponente ?fc }
+      ?senatore ocd:aderisce ?adesione .
+      ?adesione osr:rif_gruppoSenato ?gruppo .
+      FILTER NOT EXISTS { ?adesione ocd:dataFine ?df }
       OPTIONAL { ?gruppo rdfs:label ?gruppoNome }
       OPTIONAL { ?gruppo dc:title ?gruppoNome }
     }
   `;
 
-  const gruppiBySenatore = {};
-  for (const [label, q] of [['Strategia 1 (mandato/gruppo)', queryGruppo1], ['Strategia 2 (componente/gruppo)', queryGruppo2]]) {
+  // Strategia C: cerca direttamente il label sul blank node (alcuni datasets ci mettono il nome del gruppo direttamente)
+  const queryC = `
+    PREFIX ocd: <http://dati.camera.it/ocd/>
+    PREFIX osr: <http://dati.senato.it/osr/>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    SELECT DISTINCT ?senatore ?gruppoNome WHERE {
+      ?senatore a osr:Senatore .
+      ?senatore ocd:aderisce ?adesione .
+      ?adesione rdfs:label ?gruppoNome .
+      FILTER NOT EXISTS { ?adesione ocd:dataFine ?df }
+    }
+  `;
+
+  for (const [label, q] of [
+    ['A: rif_gruppoParlamentare', queryA],
+    ['B: rif_gruppoSenato', queryB],
+    ['C: label diretta su adesione', queryC],
+  ]) {
     try {
       const grows = await runSPARQL(SPARQL_SENATO, q, { retries: 2 });
-      console.log(`   → ${label}: ${grows.length} righe gruppo`);
+      console.log(`   → ${label}: ${grows.length} righe`);
       if (grows.length > 0) {
         console.log(`      Esempio: ${JSON.stringify(grows[0]).slice(0, 300)}`);
         grows.forEach(g => {
@@ -378,7 +408,6 @@ async function saveItems(items) {
 
   await saveItems([...camera, ...senato]);
 
-  // Aggiorna lo stato del run
   await db.collection('meta').doc('parlamentari').set({
     lastRun: admin.firestore.Timestamp.now(),
     cameraOk,
