@@ -1,288 +1,436 @@
-<!DOCTYPE html>
-<html lang="it">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Parlamentari — Parlamento Italiano</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #0a0c10; --surface: #111318; --surface2: #181c24; --border: #232836;
-      --accent: #c9a84c; --accent2: #8b6f2e; --text: #e8eaf0; --text2: #9aa0b4;
-      --green: #4caf82; --red: #e05555; --blue: #4a8fd4;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; min-height: 100vh; }
-    header { background: linear-gradient(180deg, #0d1017 0%, var(--bg) 100%); border-bottom: 1px solid var(--border); padding: 20px 32px; display: flex; align-items: center; justify-content: space-between; }
-    header h1 { font-family: 'Cinzel', serif; font-size: 1.5rem; color: var(--accent); letter-spacing: 0.05em; }
-    header h1 span { color: var(--text2); font-size: 0.9rem; font-family: 'Inter', sans-serif; display: block; margin-top: 2px; font-weight: 300; }
-    header h1 a { color: inherit; text-decoration: none; }
-    #last-update { font-size: 0.75rem; color: var(--text2); }
-    #breadcrumb { padding: 12px 32px; font-size: 0.8rem; color: var(--text2); display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
-    #breadcrumb a, #breadcrumb span { color: var(--text2); text-decoration: none; }
-    #breadcrumb a:hover { color: var(--accent); }
-    #breadcrumb .sep { color: var(--border); }
-    main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
-    .section-title { font-family: 'Cinzel', serif; font-size: 1.1rem; color: var(--accent); margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+// ========================================================================
+// PARLAMENTO DASHBOARD — Fetch Parlamentari v5 (Phase 1: lista + gruppi)
+// v5 — Senato: usa osr:gruppo (predicato corretto rivelato dalla diagnostica
+//      v4) + filtro per legislatura 19 sull'adesione + 3 strategie di
+//      fallback inclusa la query inversa "dal gruppo al senatore".
+// ========================================================================
 
-    .info-banner { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 14px 18px; margin-bottom: 24px; font-size: 0.82rem; color: var(--text2); line-height: 1.5; }
-    .info-banner strong { color: var(--text); }
+import admin from 'firebase-admin';
 
-    #filters { margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    .filter-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-    .filter-label { font-size: 0.75rem; color: var(--text2); margin-right: 4px; }
-    .filter-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); border-radius: 6px; padding: 5px 12px; font-size: 0.78rem; cursor: pointer; transition: all 0.15s; }
-    .filter-btn:hover, .filter-btn.active { background: var(--accent2); border-color: var(--accent); color: var(--text); }
-    .filter-divider { width: 100%; height: 1px; background: var(--border); margin: 4px 0; }
-    #count-badge { margin-left: auto; font-size: 0.75rem; color: var(--text2); }
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+const db = admin.firestore();
 
-    #search-bar { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px 14px; font-size: 0.9rem; font-family: 'Inter', sans-serif; margin-bottom: 16px; }
-    #search-bar:focus { outline: none; border-color: var(--accent); }
-    #search-bar::placeholder { color: var(--text2); }
+console.log('🏛  Parlamentari — Fetch v5 (Phase 1) avviato');
+console.log('📅 ', new Date().toLocaleString('it-IT'));
+console.log('─'.repeat(50));
 
-    #parl-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-    .parl-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; transition: border-color 0.2s; }
-    .parl-card:hover { border-color: #2d3448; }
-    .parl-name { font-size: 0.95rem; font-weight: 500; line-height: 1.3; }
-    .parl-name a { color: var(--text); text-decoration: none; }
-    .parl-name a:hover { color: var(--accent); }
-    .parl-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
-    .parl-chamber { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 4px; text-transform: uppercase; }
-    .chamber-camera { background: #1a1f30; color: var(--blue); border: 1px solid #2a3050; }
-    .chamber-senato { background: #2a2010; color: #d4a44a; border: 1px solid #5a4020; }
-    .parl-coalizione { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 4px; text-transform: uppercase; }
-    .coal-centrodestra { background: rgba(74, 143, 212, 0.12); color: #6ab4f4; border: 1px solid #2a5a8a; }
-    .coal-centrosinistra { background: rgba(224, 85, 85, 0.12); color: #f08080; border: 1px solid #6a2a2a; }
-    .coal-m5s { background: rgba(255, 200, 80, 0.12); color: #ffce5c; border: 1px solid #5a4520; }
-    .coal-terzo-polo { background: rgba(155, 122, 223, 0.12); color: #b89af0; border: 1px solid #4a3a6a; }
-    .coal-misto { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
-    .coal-autonomie { background: rgba(76, 175, 130, 0.12); color: #5ec997; border: 1px solid #2a6a4a; }
-    .coal-altri { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
-    .parl-gruppo { font-size: 0.72rem; color: var(--text2); margin-top: 6px; }
-    .parl-presenze { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 0.75rem; color: var(--text2); display: flex; align-items: center; gap: 6px; }
-    .presenze-placeholder { font-style: italic; opacity: 0.7; }
+const UA = { 'User-Agent': 'Mozilla/5.0 (compatible; ParlamentoDashboard/1.0)' };
 
-    .empty-state { text-align: center; padding: 60px 20px; color: var(--text2); grid-column: 1 / -1; }
-    .empty-state .icon { font-size: 3rem; margin-bottom: 16px; }
-    .empty-state p { font-size: 0.9rem; }
-    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
+// ═══════════════════════════════════════════════════════
+// COALITION MAPPING
+// ═══════════════════════════════════════════════════════
+const COALITION_MAP = [
+  { match: /fratelli d'italia|^fdi|\bfdi\b/i,                      coalizione: 'centrodestra' },
+  { match: /\blega\b|lsp|salvini premier/i,                        coalizione: 'centrodestra' },
+  { match: /forza italia|\bfi-|^fi\b|\bppe\b/i,                    coalizione: 'centrodestra' },
+  { match: /noi moderati|\bnm\(/i,                                  coalizione: 'centrodestra' },
+  { match: /civici/i,                                               coalizione: 'centrodestra' },
+  { match: /partito democratico|pd-idp|\bpd\b/i,                   coalizione: 'centrosinistra' },
+  { match: /alleanza verdi|\bavs\b|verdi.*sinistra/i,              coalizione: 'centrosinistra' },
+  { match: /movimento 5 stelle|\bm5s\b/i,                          coalizione: 'm5s' },
+  { match: /\bazione\b|\baz-|italia viva|\biv-|\bivrè\b|\brè\b/i,  coalizione: 'terzo polo' },
+  { match: /autonomie|\bsvp\b|trentino|valle.*aosta/i,             coalizione: 'autonomie' },
+  { match: /misto/i,                                                coalizione: 'misto' },
+];
 
-    .btn-back { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); border-radius: 8px; padding: 8px 16px; font-size: 0.82rem; cursor: pointer; margin-bottom: 24px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s; text-decoration: none; }
-    .btn-back:hover { border-color: var(--accent); color: var(--text); }
-  </style>
-</head>
-<body>
+function mapCoalizione(gruppo) {
+  if (!gruppo) return 'altri';
+  for (const r of COALITION_MAP) if (r.match.test(gruppo)) return r.coalizione;
+  return 'altri';
+}
 
-<header>
-  <h1><a href="index.html">🏛 Parlamento Italiano</a> <span>Parlamentari della XIX legislatura</span></h1>
-  <div id="last-update">—</div>
-</header>
+function makeId(prefix, str) {
+  return prefix + '-' + String(str)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/gi, '-')
+    .toLowerCase()
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 100);
+}
 
-<div id="breadcrumb">
-  <a href="index.html">🏠 Home</a>
-  <span class="sep">›</span>
-  <span>👥 Parlamentari</span>
-</div>
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-<main>
-  <a href="index.html" class="btn-back">← Torna alla home</a>
-  <div class="section-title">👥 Parlamentari della XIX legislatura</div>
-
-  <div class="info-banner">
-    <strong>Nota sui dati di presenza.</strong> Le percentuali di partecipazione si riferiscono alle votazioni elettroniche d'Aula, non alla presenza fisica in aula o ai lavori in Commissione. Un parlamentare risulta "presente" quando vota o è in missione; risulta "assente" quando non partecipa al voto, anche se fisicamente presente. <em>Il calcolo delle presenze sarà disponibile a breve.</em>
-  </div>
-
-  <div id="app">
-    <div class="empty-state"><div class="spinner"></div><p style="margin-top:16px">Caricamento parlamentari...</p></div>
-  </div>
-</main>
-
-<script type="module">
-  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
-  import { getFirestore, collection, getDocs, doc, getDoc } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
-
-  console.log('👥 Pagina Parlamentari v1 caricata');
-
-  const firebaseConfig = {
-    apiKey: "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
-    authDomain: "parlamento-dashboard.firebaseapp.com",
-    projectId: "parlamento-dashboard",
-    storageBucket: "parlamento-dashboard.firebasestorage.app",
-    messagingSenderId: "111190618195",
-    appId: "1:111190618195:web:057005348e1736d2e096a6",
-  };
-
-  const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
-
-  let allParl = [];
-  let activeFonte = 'tutti';
-  let activeCoalizione = 'tutti';
-  let activeGruppo = 'tutti';
-  let searchQuery = '';
-
-  const COAL_LABELS = {
-    'tutti': 'Tutte',
-    'centrodestra': 'Centrodestra',
-    'centrosinistra': 'Centrosinistra',
-    'm5s': 'M5S',
-    'terzo polo': 'Terzo polo',
-    'autonomie': 'Autonomie',
-    'misto': 'Misto',
-    'altri': 'Altri',
-  };
-
-  async function loadParlamentari() {
+// ═══════════════════════════════════════════════════════
+// SPARQL helper con retry
+// ═══════════════════════════════════════════════════════
+async function runSPARQL(endpoint, query, opts = {}) {
+  const { retries = 3, retryDelay = 5000 } = opts;
+  let lastErr;
+  for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const snap = await getDocs(collection(db, 'parlamentari'));
-      allParl = [];
-      snap.forEach(docSnap => {
-        const d = docSnap.data();
-        allParl.push({ id: docSnap.id, ...d });
-      });
-      console.log(`📊 Caricati ${allParl.length} parlamentari`);
-      if (allParl.length > 0) console.log('Esempio:', allParl[0]);
-
-      // Ordina per cognome
-      allParl.sort((a, b) => (a.cognome || '').localeCompare(b.cognome || '', 'it'));
-
-      // Aggiorna last-update da meta
-      try {
-        const metaSnap = await getDoc(doc(db, 'meta', 'parlamentari'));
-        if (metaSnap.exists()) {
-          const meta = metaSnap.data();
-          if (meta.lastUpdate?.toDate) {
-            const d = meta.lastUpdate.toDate();
-            document.getElementById('last-update').textContent =
-              'Aggiornato: ' + d.toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-          }
+      const res = await fetch(endpoint + '?' + new URLSearchParams({
+        query, format: 'application/sparql-results+json', 'default-graph-uri': ''
+      }), { headers: { ...UA, 'Accept': 'application/sparql-results+json' } });
+      if (res.status === 503 || res.status === 504 || res.status === 502) {
+        lastErr = new Error(`SPARQL HTTP ${res.status} (server overloaded)`);
+        if (attempt < retries) {
+          console.log(`   ↻ Tentativo ${attempt}/${retries} fallito (HTTP ${res.status}), retry tra ${retryDelay/1000}s...`);
+          await sleep(retryDelay);
+          continue;
         }
-      } catch (e) { /* meta opzionale */ }
-
-      render();
+        throw lastErr;
+      }
+      if (!res.ok) throw new Error(`SPARQL HTTP ${res.status}`);
+      const json = await res.json();
+      return json?.results?.bindings || [];
     } catch (e) {
-      console.error('Errore caricamento parlamentari:', e);
-      document.getElementById('app').innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Errore caricamento dati.<br><small>${e.message}</small></p></div>`;
+      lastErr = e;
+      if (attempt < retries && /network|fetch failed|timeout/i.test(e.message)) {
+        await sleep(retryDelay);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
+// ═══════════════════════════════════════════════════════
+// CAMERA — invariata, funziona
+// ═══════════════════════════════════════════════════════
+const SPARQL_CAMERA = 'https://dati.camera.it/sparql';
+const LEG_19_CAMERA = 'http://dati.camera.it/ocd/legislatura.rdf/repubblica_19';
+
+async function fetchCameraDeputati() {
+  console.log('📥 Camera dei Deputati (SPARQL):');
+  const items = [];
+
+  const query = `
+    PREFIX ocd: <http://dati.camera.it/ocd/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    SELECT DISTINCT ?deputato ?cognome ?nome ?gruppoLabel WHERE {
+      ?deputato a ocd:deputato .
+      ?deputato ocd:rif_leg <${LEG_19_CAMERA}> .
+      OPTIONAL { ?deputato foaf:firstName ?nome }
+      OPTIONAL { ?deputato foaf:surname ?cognome }
+      OPTIONAL {
+        ?deputato ocd:aderisce ?adesione .
+        ?adesione ocd:rif_gruppoParlamentare ?gruppo .
+        ?gruppo rdfs:label ?gruppoLabel .
+        FILTER NOT EXISTS { ?adesione ocd:dataFine ?df }
+      }
+    }
+  `;
+
+  const rows = await runSPARQL(SPARQL_CAMERA, query, { retries: 4, retryDelay: 8000 });
+  console.log(`   → SPARQL ha restituito ${rows.length} righe`);
+  if (rows.length > 0) {
+    console.log(`   → Esempio prima riga:`, JSON.stringify(rows[0]).slice(0, 300));
+  }
+
+  const byDep = {};
+  rows.forEach(r => {
+    const url = r.deputato?.value;
+    const cognome = r.cognome?.value || '';
+    const nome = r.nome?.value || '';
+    const gruppo = r.gruppoLabel?.value;
+    if (!url || !cognome) return;
+    if (!byDep[url]) byDep[url] = { url, cognome, nome, gruppi: [] };
+    if (gruppo) byDep[url].gruppi.push(gruppo);
+  });
+  Object.values(byDep).forEach(d => {
+    const gruppo = d.gruppi[d.gruppi.length - 1] || 'Non assegnato';
+    items.push({
+      id: makeId('camera', `${d.cognome}-${d.nome}`),
+      fonte: 'camera',
+      cognome: d.cognome,
+      nome: d.nome,
+      nomeCompleto: `${d.cognome} ${d.nome}`.trim(),
+      gruppo,
+      coalizione: mapCoalizione(gruppo),
+      link: d.url,
+      presenze: null,
+    });
+  });
+  console.log(`   ✅ Camera: ${items.length} deputati unici`);
+
+  if (items.length === 0) {
+    throw new Error('Camera ha restituito 0 deputati — abort per non sovrascrivere dati validi');
+  }
+
+  return items;
+}
+
+// ═══════════════════════════════════════════════════════
+// SENATO — v5: predicato corretto osr:gruppo + 3 strategie
+// SCOPERTA da diagnostica v4: il blank node aderisce ha
+//   osr:legislatura, osr:inizio, osr:fine, osr:gruppo, osr:carica
+// (NON ocd:dataFine, NON osr:rif_gruppoSenato, NON rif_gruppoParlamentare)
+// ═══════════════════════════════════════════════════════
+const SPARQL_SENATO = 'http://dati.senato.it/sparql';
+
+async function diagnoseGruppo(gruppoUri) {
+  console.log(`   🔬 Diagnostica predicati del gruppo ${gruppoUri}...`);
+  const query = `SELECT DISTINCT ?p ?o WHERE { <${gruppoUri}> ?p ?o } LIMIT 50`;
+  try {
+    const rows = await runSPARQL(SPARQL_SENATO, query, { retries: 2 });
+    console.log(`   📋 Predicati del gruppo (${rows.length}):`);
+    rows.forEach(r => {
+      const p = r.p?.value || '';
+      const o = r.o?.value || '';
+      const oShort = o.length > 100 ? o.slice(0, 100) + '...' : o;
+      console.log(`      ${p}  →  ${oShort}`);
+    });
+  } catch (e) {
+    console.log(`   ⚠ Diagnostica gruppo fallita: ${e.message}`);
+  }
+}
+
+async function fetchSenatoSenatori() {
+  console.log('📥 Senato della Repubblica (SPARQL):');
+  const items = [];
+
+  // Step A: lista senatori
+  const queryLista = `
+    PREFIX osr: <http://dati.senato.it/osr/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    SELECT DISTINCT ?senatore ?cognome ?nome WHERE {
+      ?senatore a osr:Senatore .
+      ?senatore osr:mandato ?mandato .
+      ?mandato osr:legislatura 19 .
+      OPTIONAL { ?senatore foaf:firstName ?nome }
+      OPTIONAL { ?senatore foaf:lastName ?cognome }
+      OPTIONAL { ?senatore foaf:surname ?cognome }
+    }
+  `;
+
+  let rows = [];
+  try {
+    rows = await runSPARQL(SPARQL_SENATO, queryLista, { retries: 3 });
+    console.log(`   → Lista senatori: ${rows.length} righe`);
+  } catch (e) {
+    console.error(`   ❌ Lista senatori fallita: ${e.message}`);
+    return items;
+  }
+
+  const gruppiBySenatore = {};
+
+  // Strategia A: query "diretta" - senatore → adesione legislatura 19 → gruppo
+  // Il filtro è osr:legislatura = 19 (numero), NON una URL.
+  console.log('   → Strategia A: senatore → adesione lega 19 → osr:gruppo');
+  const queryA = `
+    PREFIX ocd: <http://dati.camera.it/ocd/>
+    PREFIX osr: <http://dati.senato.it/osr/>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX dc: <http://purl.org/dc/elements/1.1/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    SELECT DISTINCT ?senatore ?gruppoUri ?gruppoNome WHERE {
+      ?senatore a osr:Senatore .
+      ?senatore ocd:aderisce ?adesione .
+      ?adesione osr:legislatura 19 .
+      ?adesione osr:gruppo ?gruppoUri .
+      OPTIONAL { ?gruppoUri rdfs:label ?gruppoNome }
+      OPTIONAL { ?gruppoUri dc:title ?gruppoNome }
+      OPTIONAL { ?gruppoUri foaf:name ?gruppoNome }
+    }
+  `;
+  try {
+    const grows = await runSPARQL(SPARQL_SENATO, queryA, { retries: 3 });
+    console.log(`      → ${grows.length} righe`);
+    if (grows.length > 0) {
+      console.log(`      Esempio: ${JSON.stringify(grows[0]).slice(0, 350)}`);
+    }
+    grows.forEach(g => {
+      const sen = g.senatore?.value;
+      const nome = g.gruppoNome?.value || g.gruppoUri?.value;
+      if (sen && nome && !gruppiBySenatore[sen]) gruppiBySenatore[sen] = nome;
+    });
+  } catch (e) {
+    console.log(`      ⚠ Strategia A fallita: ${e.message}`);
+  }
+
+  // Strategia B (fallback): se A non trova etichette, scarichiamo
+  // tutti gli URI gruppo trovati e diagnostichiamo uno
+  if (Object.keys(gruppiBySenatore).length === 0) {
+    console.log('   → Strategia A senza risultati, provo query "gruppoUri only"...');
+    const queryUri = `
+      PREFIX ocd: <http://dati.camera.it/ocd/>
+      PREFIX osr: <http://dati.senato.it/osr/>
+      SELECT DISTINCT ?senatore ?gruppoUri WHERE {
+        ?senatore a osr:Senatore .
+        ?senatore ocd:aderisce ?adesione .
+        ?adesione osr:legislatura 19 .
+        ?adesione osr:gruppo ?gruppoUri .
+      }
+    `;
+    try {
+      const grows = await runSPARQL(SPARQL_SENATO, queryUri, { retries: 2 });
+      console.log(`      → ${grows.length} righe (solo URI gruppo)`);
+      if (grows.length > 0) {
+        console.log(`      Esempio URI: ${grows[0].gruppoUri?.value}`);
+        await diagnoseGruppo(grows[0].gruppoUri.value);
+        // Mappa con URI come placeholder; l'utente vedrà l'URL del gruppo
+        // come fallback se non c'è altro
+        grows.forEach(g => {
+          const sen = g.senatore?.value;
+          const uri = g.gruppoUri?.value;
+          if (sen && uri && !gruppiBySenatore[sen]) gruppiBySenatore[sen] = uri;
+        });
+      }
+    } catch (e) {
+      console.log(`      ⚠ Query URI fallita: ${e.message}`);
     }
   }
 
-  function render() {
-    if (allParl.length === 0) {
-      document.getElementById('app').innerHTML = `
-        <div class="empty-state">
-          <div class="icon">📭</div>
-          <p>Nessun parlamentare presente nel database.<br>
-          <small>Esegui il workflow "Fetch Parlamentari Data" da GitHub Actions per popolare i dati.</small></p>
-        </div>`;
-      return;
-    }
-
-    // Coalizioni disponibili (ordinate)
-    const coalSet = new Set(allParl.map(p => p.coalizione || 'altri'));
-    const coalizioni = ['tutti', ...Array.from(coalSet).sort()];
-
-    // Gruppi disponibili (filtrati per fonte e coalizione attive)
-    let parlForGruppi = allParl;
-    if (activeFonte !== 'tutti') parlForGruppi = parlForGruppi.filter(p => p.fonte === activeFonte);
-    if (activeCoalizione !== 'tutti') parlForGruppi = parlForGruppi.filter(p => (p.coalizione || 'altri') === activeCoalizione);
-    const gruppoSet = new Set(parlForGruppi.map(p => p.gruppo).filter(Boolean));
-    const gruppi = ['tutti', ...Array.from(gruppoSet).sort()];
-
-    // Applica filtri
-    let filtered = allParl;
-    if (activeFonte !== 'tutti') filtered = filtered.filter(p => p.fonte === activeFonte);
-    if (activeCoalizione !== 'tutti') filtered = filtered.filter(p => (p.coalizione || 'altri') === activeCoalizione);
-    if (activeGruppo !== 'tutti') filtered = filtered.filter(p => p.gruppo === activeGruppo);
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(p =>
-        (p.nomeCompleto || '').toLowerCase().includes(q) ||
-        (p.cognome || '').toLowerCase().includes(q) ||
-        (p.nome || '').toLowerCase().includes(q) ||
-        (p.gruppo || '').toLowerCase().includes(q)
-      );
-    }
-
-    document.getElementById('app').innerHTML = `
-      <input id="search-bar" type="text" placeholder="🔍 Cerca per nome, cognome o gruppo..." value="${escapeAttr(searchQuery)}" />
-      <div id="filters">
-        <div class="filter-group">
-          <span class="filter-label">Camera:</span>
-          <button class="filter-btn ${activeFonte==='tutti'?'active':''}" data-action="setFonte" data-value="tutti">Tutte</button>
-          <button class="filter-btn ${activeFonte==='camera'?'active':''}" data-action="setFonte" data-value="camera">🏛 Camera</button>
-          <button class="filter-btn ${activeFonte==='senato'?'active':''}" data-action="setFonte" data-value="senato">⚖️ Senato</button>
-        </div>
-        <div class="filter-divider"></div>
-        <div class="filter-group">
-          <span class="filter-label">Coalizione:</span>
-          ${coalizioni.map(c => `<button class="filter-btn ${c===activeCoalizione?'active':''}" data-action="setCoalizione" data-value="${escapeAttr(c)}">${COAL_LABELS[c] || c}</button>`).join('')}
-        </div>
-        ${gruppi.length > 2 ? `
-        <div class="filter-divider"></div>
-        <div class="filter-group">
-          <span class="filter-label">Gruppo:</span>
-          ${gruppi.map(g => `<button class="filter-btn ${g===activeGruppo?'active':''}" data-action="setGruppo" data-value="${escapeAttr(g)}">${g === 'tutti' ? 'Tutti' : truncate(g, 30)}</button>`).join('')}
-        </div>` : ''}
-        <span id="count-badge">${filtered.length} di ${allParl.length} parlamentari</span>
-      </div>
-      <div id="parl-list">
-        ${filtered.length === 0
-          ? `<div class="empty-state"><div class="icon">📭</div><p>Nessun parlamentare trovato.</p></div>`
-          : filtered.map(renderCard).join('')}
-      </div>
+  // Strategia C (ultimo fallback): query inversa dal gruppo verso il senatore
+  if (Object.keys(gruppiBySenatore).length === 0) {
+    console.log('   → Strategia C: query inversa - gruppi della legislatura 19 con loro membri');
+    const queryC = `
+      PREFIX ocd: <http://dati.camera.it/ocd/>
+      PREFIX osr: <http://dati.senato.it/osr/>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX dc: <http://purl.org/dc/elements/1.1/>
+      SELECT DISTINCT ?senatore ?gruppoUri ?gruppoNome WHERE {
+        ?gruppoUri a osr:Gruppo .
+        ?gruppoUri osr:legislatura 19 .
+        OPTIONAL { ?gruppoUri rdfs:label ?gruppoNome }
+        OPTIONAL { ?gruppoUri dc:title ?gruppoNome }
+        ?adesione osr:gruppo ?gruppoUri .
+        ?senatore ocd:aderisce ?adesione .
+        ?senatore a osr:Senatore .
+      }
     `;
-
-    // Event handlers (no inline onclick per evitare problemi di escaping)
-    document.getElementById('search-bar').addEventListener('input', (e) => {
-      searchQuery = e.target.value;
-      // Re-render mantenendo focus
-      const before = e.target.selectionStart;
-      render();
-      const sb = document.getElementById('search-bar');
-      if (sb) { sb.focus(); sb.setSelectionRange(before, before); }
-    });
-
-    document.querySelectorAll('[data-action]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const action = btn.dataset.action;
-        const value = btn.dataset.value;
-        if (action === 'setFonte') { activeFonte = value; activeGruppo = 'tutti'; }
-        if (action === 'setCoalizione') { activeCoalizione = value; activeGruppo = 'tutti'; }
-        if (action === 'setGruppo') { activeGruppo = value; }
-        render();
+    try {
+      const grows = await runSPARQL(SPARQL_SENATO, queryC, { retries: 2 });
+      console.log(`      → ${grows.length} righe`);
+      if (grows.length > 0) {
+        console.log(`      Esempio: ${JSON.stringify(grows[0]).slice(0, 350)}`);
+      }
+      grows.forEach(g => {
+        const sen = g.senatore?.value;
+        const nome = g.gruppoNome?.value || g.gruppoUri?.value;
+        if (sen && nome && !gruppiBySenatore[sen]) gruppiBySenatore[sen] = nome;
       });
+    } catch (e) {
+      console.log(`      ⚠ Strategia C fallita: ${e.message}`);
+    }
+  }
+
+  console.log(`   📊 Gruppi associati: ${Object.keys(gruppiBySenatore).length} di ${rows.length} senatori`);
+
+  // Step D: assembla
+  const bySen = {};
+  rows.forEach(r => {
+    const url = r.senatore?.value;
+    const cognome = r.cognome?.value || '';
+    const nome = r.nome?.value || '';
+    if (!url || !cognome) return;
+    if (!bySen[url]) bySen[url] = { url, cognome, nome };
+  });
+
+  Object.values(bySen).forEach(s => {
+    const gruppo = gruppiBySenatore[s.url] || 'Non assegnato';
+    items.push({
+      id: makeId('senato', `${s.cognome}-${s.nome}`),
+      fonte: 'senato',
+      cognome: s.cognome,
+      nome: s.nome,
+      nomeCompleto: `${s.cognome} ${s.nome}`.trim(),
+      gruppo,
+      coalizione: mapCoalizione(gruppo),
+      link: s.url,
+      presenze: null,
     });
+  });
+
+  console.log(`   ✅ Senato: ${items.length} senatori unici`);
+  return items;
+}
+
+// ═══════════════════════════════════════════════════════
+// SAVE TO FIRESTORE
+// ═══════════════════════════════════════════════════════
+function sanitize(item) {
+  const clean = {};
+  for (const [k, v] of Object.entries(item)) {
+    if (v === undefined) continue;
+    if (v === null) { clean[k] = null; continue; }
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      clean[k] = v;
+    }
+  }
+  return clean;
+}
+
+async function saveItems(items) {
+  if (!items.length) {
+    console.log('─'.repeat(50));
+    console.log('   → Nessun parlamentare da salvare. Esco.');
+    return;
+  }
+  console.log('─'.repeat(50));
+  console.log(`💾 Salvataggio ${items.length} parlamentari...`);
+
+  const now = admin.firestore.Timestamp.now();
+  const chunkSize = 400;
+  let saved = 0, skipped = 0;
+
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const batch = db.batch();
+    chunk.forEach(item => {
+      try {
+        const clean = sanitize(item);
+        clean.fetchedAt = now;
+        const ref = db.collection('parlamentari').doc(item.id);
+        batch.set(ref, clean, { merge: true });
+      } catch (e) { skipped++; }
+    });
+    try {
+      await batch.commit();
+      saved += chunk.length;
+      console.log(`   → Batch ${Math.floor(i/chunkSize)+1}: ${chunk.length} salvati`);
+    } catch (e) {
+      console.error(`   ❌ Batch fallito: ${e.message}`);
+    }
   }
 
-  function renderCard(p) {
-    const chamberClass = p.fonte === 'camera' ? 'chamber-camera' : 'chamber-senato';
-    const chamberLabel = p.fonte === 'camera' ? 'Camera' : 'Senato';
-    const coalKey = (p.coalizione || 'altri').replace(/\s+/g, '-');
-    const coalLabel = COAL_LABELS[p.coalizione] || p.coalizione || 'Altri';
-    const link = p.link || '#';
-    const presenze = (typeof p.presenze === 'number')
-      ? `<span class="parl-presenze">📊 Partecipazione voti: <strong>${p.presenze.toFixed(1)}%</strong></span>`
-      : `<span class="parl-presenze presenze-placeholder">📊 Presenze: in arrivo</span>`;
-    return `
-      <div class="parl-card">
-        <div class="parl-name"><a href="${link}" target="_blank" rel="noopener">${escapeHtml(p.nomeCompleto || (p.cognome + ' ' + p.nome))}</a></div>
-        <div class="parl-meta">
-          <span class="parl-chamber ${chamberClass}">${chamberLabel}</span>
-          <span class="parl-coalizione coal-${coalKey}">${coalLabel}</span>
-        </div>
-        <div class="parl-gruppo">${escapeHtml(p.gruppo || 'Non assegnato')}</div>
-        ${presenze}
-      </div>
-    `;
+  await db.collection('meta').doc('parlamentari').set({
+    lastUpdate: now,
+    totalCount: items.length,
+    cameraCount: items.filter(i => i.fonte === 'camera').length,
+    senatoCount: items.filter(i => i.fonte === 'senato').length,
+  }, { merge: true });
+
+  console.log(`✅ Totale salvati: ${saved} (skipped: ${skipped})`);
+}
+
+(async () => {
+  let camera = [], senato = [];
+  let cameraOk = false;
+
+  try {
+    camera = await fetchCameraDeputati();
+    cameraOk = true;
+  } catch (err) {
+    console.error(`⚠ Camera fallita: ${err.message}`);
   }
 
-  function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-  function escapeAttr(s) { return String(s ?? '').replace(/"/g, '&quot;'); }
-  function truncate(s, n) { return s.length > n ? s.slice(0, n-1) + '…' : s; }
+  try {
+    senato = await fetchSenatoSenatori();
+  } catch (err) {
+    console.error(`⚠ Senato fallita: ${err.message}`);
+  }
 
-  loadParlamentari();
-</script>
-</body>
-</html>
+  if (camera.length === 0 && senato.length === 0) {
+    console.error('❌ Entrambe le fonti hanno fallito, esco senza scrivere.');
+    process.exit(1);
+  }
+
+  await saveItems([...camera, ...senato]);
+
+  await db.collection('meta').doc('parlamentari').set({
+    lastRun: admin.firestore.Timestamp.now(),
+    cameraOk,
+    senatoOk: senato.length > 0,
+  }, { merge: true });
+
+  console.log('─'.repeat(50));
+  if (!cameraOk) {
+    console.error('⚠  Run completato MA Camera è fallita — exit 1');
+    process.exit(1);
+  }
+  console.log('✅ Completato!');
+})();
