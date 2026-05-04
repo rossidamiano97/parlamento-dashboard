@@ -1,0 +1,31 @@
+name: Fetch Parlamentari Data
+
+on:
+  schedule:
+    # Lunedì alle 6:00 UTC (7:00/8:00 ora italiana). I dati di anagrafica
+    # cambiano lentamente, quindi una volta a settimana è sufficiente.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: # Permette esecuzione manuale dalla schermata Actions
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Fetch and store parlamentari data
+        run: node scripts/fetch-parlamentari.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Log completion
+        run: echo "Fetch parlamentari completato alle $(date)"
