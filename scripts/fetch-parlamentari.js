@@ -1,5 +1,6 @@
 // ========================================================================
-// PARLAMENTO DASHBOARD — Fetch Parlamentari v1 (Phase 1: lista + gruppi)
+// PARLAMENTO DASHBOARD — Fetch Parlamentari v2 (Phase 1: lista + gruppi)
+// v2: Senato passa da scraping a SPARQL su dati.senato.it
 // Recupera l'anagrafica di deputati e senatori della XIX legislatura con
 // gruppi di appartenenza correnti e applica un mapping di coalizione.
 // Salva in Firestore collection "parlamentari".
@@ -12,7 +13,7 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
-console.log('🏛  Parlamentari — Fetch v1 (Phase 1) avviato');
+console.log('🏛  Parlamentari — Fetch v2 (Phase 1) avviato');
 console.log('📅 ', new Date().toLocaleString('it-IT'));
 console.log('─'.repeat(50));
 
@@ -20,8 +21,6 @@ const UA = { 'User-Agent': 'Mozilla/5.0 (compatible; ParlamentoDashboard/1.0)' }
 
 // ═══════════════════════════════════════════════════════
 // COALITION MAPPING (XIX Legislatura)
-// Modifica liberamente: ogni regola match → coalizione.
-// L'ordine conta: la prima regex che matcha vince.
 // ═══════════════════════════════════════════════════════
 const COALITION_MAP = [
   { match: /fratelli d'italia|^fdi|\bfdi\b/i,                      coalizione: 'centrodestra' },
@@ -45,7 +44,7 @@ function mapCoalizione(gruppo) {
 
 function makeId(prefix, str) {
   return prefix + '-' + String(str)
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // rimuovi accenti
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/gi, '-')
     .toLowerCase()
     .replace(/^-+|-+$/g, '')
@@ -53,11 +52,8 @@ function makeId(prefix, str) {
 }
 
 // ═══════════════════════════════════════════════════════
-// CAMERA — SPARQL su dati.camera.it
+// SPARQL helper
 // ═══════════════════════════════════════════════════════
-const SPARQL_CAMERA = 'https://dati.camera.it/sparql';
-const LEG_19 = 'http://dati.camera.it/ocd/legislatura.rdf/repubblica_19';
-
 async function runSPARQL(endpoint, query) {
   const res = await fetch(endpoint + '?' + new URLSearchParams({
     query, format: 'application/sparql-results+json', 'default-graph-uri': ''
@@ -67,18 +63,23 @@ async function runSPARQL(endpoint, query) {
   return json?.results?.bindings || [];
 }
 
+// ═══════════════════════════════════════════════════════
+// CAMERA — SPARQL su dati.camera.it (INVARIATA, funziona)
+// ═══════════════════════════════════════════════════════
+const SPARQL_CAMERA = 'https://dati.camera.it/sparql';
+const LEG_19_CAMERA = 'http://dati.camera.it/ocd/legislatura.rdf/repubblica_19';
+
 async function fetchCameraDeputati() {
   console.log('📥 Camera dei Deputati (SPARQL):');
   const items = [];
 
-  // Query principale: deputati della legislatura 19 con gruppo corrente
   const query = `
     PREFIX ocd: <http://dati.camera.it/ocd/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     SELECT DISTINCT ?deputato ?cognome ?nome ?gruppoLabel WHERE {
       ?deputato a ocd:deputato .
-      ?deputato ocd:rif_leg <${LEG_19}> .
+      ?deputato ocd:rif_leg <${LEG_19_CAMERA}> .
       OPTIONAL { ?deputato foaf:firstName ?nome }
       OPTIONAL { ?deputato foaf:surname ?cognome }
       OPTIONAL {
@@ -96,7 +97,6 @@ async function fetchCameraDeputati() {
     if (rows.length > 0) {
       console.log(`   → Esempio prima riga:`, JSON.stringify(rows[0]).slice(0, 300));
     }
-    // Aggrega per deputato (ci possono essere più gruppi storici, prendiamo l'ultimo)
     const byDep = {};
     rows.forEach(r => {
       const url = r.deputato?.value;
@@ -118,7 +118,7 @@ async function fetchCameraDeputati() {
         gruppo,
         coalizione: mapCoalizione(gruppo),
         link: d.url,
-        presenze: null, // Phase 2
+        presenze: null,
       });
     });
     console.log(`   ✅ Camera: ${items.length} deputati unici`);
@@ -130,76 +130,112 @@ async function fetchCameraDeputati() {
 }
 
 // ═══════════════════════════════════════════════════════
-// SENATO — Scraping della pagina ufficiale "elenco alfabetico"
+// SENATO — SPARQL su dati.senato.it (NUOVO in v2)
+// Endpoint: http://dati.senato.it/sparql
+// Ontologia: OSR (estende OCD), classe osr:Senatore
 // ═══════════════════════════════════════════════════════
+const SPARQL_SENATO = 'http://dati.senato.it/sparql';
+
 async function fetchSenatoSenatori() {
-  console.log('📥 Senato della Repubblica (scraping):');
+  console.log('📥 Senato della Repubblica (SPARQL):');
   const items = [];
 
-  const URL_ELENCO = 'https://www.senato.it/composizione/senatori/elenco-alfabetico';
-
-  try {
-    const res = await fetch(URL_ELENCO, { headers: UA });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const html = await res.text();
-    console.log(`   → HTML ricevuto: ${html.length} caratteri`);
-
-    // La pagina elenca: <a href="scheda-attivita?did=..."><cognome maiuscolo> <nome></a> · <gruppo>
-    // Pattern flessibile che cattura: link + nome completo + testo successivo (per il gruppo)
-    const regex = /<a[^>]+href="([^"]*scheda[^"]*did=\d+[^"]*)"[^>]*>\s*([^<]{3,80})\s*<\/a>([\s\S]{0,250}?)(?=<a[^>]+href="[^"]*scheda|<\/li>|<\/tr>|<\/p>)/gi;
-    const seen = new Set();
-    let match;
-    while ((match = regex.exec(html)) !== null) {
-      const [, href, fullName, after] = match;
-      const cleaned = fullName.replace(/\s+/g, ' ').trim();
-      if (!cleaned || cleaned.length < 4) continue;
-
-      // Separa cognome (parte maiuscola) da nome (parte successiva)
-      const nameMatch = cleaned.match(/^([A-ZÀ-Ý][A-ZÀ-Ý'\s]+?)\s+([A-ZÀ-Ý][a-zà-ÿ].*)$/);
-      if (!nameMatch) continue;
-      const cognome = nameMatch[1].trim();
-      const nome = nameMatch[2].trim();
-
-      const id = makeId('senato', `${cognome}-${nome}`);
-      if (seen.has(id)) continue;
-      seen.add(id);
-
-      // Cerca abbreviazione gruppo nel testo successivo (es. "· FI-BP-PPE" o " - PD-IDP")
-      const gruppoMatch = after.match(/[·\u00b7\-–—]\s*([A-Z][A-Za-z0-9'\-\s\(\)]{1,60}?)(?=[<\n\r]|\s{3,})/);
-      let gruppo = gruppoMatch ? gruppoMatch[1].trim() : 'Non assegnato';
-      // Pulisci HTML residuo
-      gruppo = gruppo.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, '').trim();
-      // Salta se è una nota tipo "(fino al ...)"
-      if (/^fino al|^dal\s/i.test(gruppo)) gruppo = 'Non assegnato';
-
-      const link = href.startsWith('http') ? href : `https://www.senato.it${href.startsWith('/') ? '' : '/'}${href}`;
-      items.push({
-        id, fonte: 'senato',
-        cognome, nome,
-        nomeCompleto: `${cognome} ${nome}`,
-        gruppo,
-        coalizione: mapCoalizione(gruppo),
-        link,
-        presenze: null,
-      });
-    }
-    console.log(`   ✅ Senato: ${items.length} senatori unici`);
-    if (items.length > 0) {
-      console.log(`   → Esempio:`, JSON.stringify(items[0]).slice(0, 250));
-    }
-    if (items.length === 0) {
-      // Aiuto debug: mostra un pezzetto di HTML in cui dovremmo trovare i nomi
-      const idx = html.search(/scheda[\s\S]{0,30}did=\d+/i);
-      if (idx > 0) {
-        console.log(`   ⚠ HTML attorno al primo "did": ${html.slice(Math.max(0,idx-100), idx+300)}`);
-      } else {
-        console.log(`   ⚠ Nessuna occorrenza di "scheda?did=..." nell'HTML — la pagina ha probabilmente cambiato struttura`);
+  // Query con tentativi multipli per il gruppo (OSR estende OCD,
+  // ma i predicati esatti per il gruppo Senato non sono documentati
+  // uniformemente — proviamo varie alternative in OPTIONAL).
+  const queryConGruppo = `
+    PREFIX osr: <http://dati.senato.it/osr/>
+    PREFIX ocd: <http://dati.camera.it/ocd/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX dc: <http://purl.org/dc/elements/1.1/>
+    SELECT DISTINCT ?senatore ?cognome ?nome ?gruppoLabel WHERE {
+      ?senatore a osr:Senatore .
+      ?senatore osr:mandato ?mandato .
+      ?mandato osr:legislatura 19 .
+      FILTER NOT EXISTS { ?mandato osr:fineMandato ?fm }
+      OPTIONAL { ?senatore foaf:firstName ?nome }
+      OPTIONAL { ?senatore foaf:lastName ?cognome }
+      OPTIONAL { ?senatore foaf:surname ?cognome }
+      OPTIONAL {
+        ?senatore osr:aderisce ?adesione .
+        ?adesione osr:rif_gruppoSenato ?gruppo .
+        ?gruppo rdfs:label ?gruppoLabel .
+        FILTER NOT EXISTS { ?adesione osr:dataFine ?df }
+      }
+      OPTIONAL {
+        ?senatore osr:gruppoSenato ?gruppo2 .
+        ?gruppo2 rdfs:label ?gruppoLabel .
       }
     }
+  `;
+
+  // Fallback: query più semplice senza filtro mandato attivo
+  const queryFallback = `
+    PREFIX osr: <http://dati.senato.it/osr/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    SELECT DISTINCT ?senatore ?cognome ?nome WHERE {
+      ?senatore a osr:Senatore .
+      ?senatore osr:mandato ?mandato .
+      ?mandato osr:legislatura 19 .
+      OPTIONAL { ?senatore foaf:firstName ?nome }
+      OPTIONAL { ?senatore foaf:lastName ?cognome }
+      OPTIONAL { ?senatore foaf:surname ?cognome }
+    }
+  `;
+
+  let rows = [];
+  try {
+    rows = await runSPARQL(SPARQL_SENATO, queryConGruppo);
+    console.log(`   → Query con gruppo: ${rows.length} righe`);
+    if (rows.length > 0) {
+      console.log(`   → Esempio:`, JSON.stringify(rows[0]).slice(0, 400));
+    }
   } catch (e) {
-    console.error(`   ❌ Scraping Senato fallito: ${e.message}`);
+    console.warn(`   ⚠ Query con gruppo fallita: ${e.message}`);
   }
 
+  if (rows.length === 0) {
+    console.log(`   → Tentativo query di fallback (senza filtro mandato attivo)...`);
+    try {
+      rows = await runSPARQL(SPARQL_SENATO, queryFallback);
+      console.log(`   → Query fallback: ${rows.length} righe`);
+      if (rows.length > 0) {
+        console.log(`   → Esempio:`, JSON.stringify(rows[0]).slice(0, 400));
+      }
+    } catch (e) {
+      console.error(`   ❌ Anche fallback fallita: ${e.message}`);
+    }
+  }
+
+  // Aggrega per senatore
+  const bySen = {};
+  rows.forEach(r => {
+    const url = r.senatore?.value;
+    const cognome = r.cognome?.value || '';
+    const nome = r.nome?.value || '';
+    const gruppo = r.gruppoLabel?.value;
+    if (!url || !cognome) return;
+    if (!bySen[url]) bySen[url] = { url, cognome, nome, gruppi: [] };
+    if (gruppo) bySen[url].gruppi.push(gruppo);
+  });
+
+  Object.values(bySen).forEach(s => {
+    const gruppo = s.gruppi[s.gruppi.length - 1] || 'Non assegnato';
+    items.push({
+      id: makeId('senato', `${s.cognome}-${s.nome}`),
+      fonte: 'senato',
+      cognome: s.cognome,
+      nome: s.nome,
+      nomeCompleto: `${s.cognome} ${s.nome}`.trim(),
+      gruppo,
+      coalizione: mapCoalizione(gruppo),
+      link: s.url,
+      presenze: null,
+    });
+  });
+
+  console.log(`   ✅ Senato: ${items.length} senatori unici`);
   return items;
 }
 
@@ -251,7 +287,6 @@ async function saveItems(items) {
     }
   }
 
-  // Salva metadata utili al frontend
   await db.collection('meta').doc('parlamentari').set({
     lastUpdate: now,
     totalCount: items.length,
