@@ -25,11 +25,10 @@
     #breadcrumb .sep { color: var(--border); }
     main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
     .section-title { font-family: 'Cinzel', serif; font-size: 1.1rem; color: var(--accent); margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-
     .info-banner { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 14px 18px; margin-bottom: 24px; font-size: 0.82rem; color: var(--text2); line-height: 1.5; }
     .info-banner strong { color: var(--text); }
 
-    #filters { margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    #filters { margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     .filter-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .filter-label { font-size: 0.75rem; color: var(--text2); margin-right: 4px; }
     .filter-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); border-radius: 6px; padding: 5px 12px; font-size: 0.78rem; cursor: pointer; transition: all 0.15s; }
@@ -41,17 +40,35 @@
     #search-bar:focus { outline: none; border-color: var(--accent); }
     #search-bar::placeholder { color: var(--text2); }
 
-    #parl-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-    .parl-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; transition: border-color 0.2s; }
-    .parl-card:hover { border-color: #2d3448; }
-    .parl-name { font-size: 0.95rem; font-weight: 500; line-height: 1.3; }
+    /* COMPACT ROW LAYOUT */
+    #parl-list { display: flex; flex-direction: column; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .parl-row {
+      display: grid;
+      grid-template-columns: 32px 1fr 1.5fr auto auto;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 16px;
+      background: var(--surface);
+      transition: background 0.1s;
+    }
+    .parl-row:hover { background: var(--surface2); }
+    .parl-chamber-icon {
+      width: 26px; height: 26px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.95rem; border-radius: 50%;
+      background: var(--surface2);
+    }
+    .parl-chamber-camera { background: rgba(74, 143, 212, 0.15); color: var(--blue); }
+    .parl-chamber-senato { background: rgba(212, 164, 74, 0.15); color: #d4a44a; }
+    .parl-name { font-size: 0.88rem; font-weight: 500; }
     .parl-name a { color: var(--text); text-decoration: none; }
     .parl-name a:hover { color: var(--accent); }
-    .parl-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
-    .parl-chamber { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 4px; text-transform: uppercase; }
-    .chamber-camera { background: #1a1f30; color: var(--blue); border: 1px solid #2a3050; }
-    .chamber-senato { background: #2a2010; color: #d4a44a; border: 1px solid #5a4020; }
-    .parl-coalizione { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 4px; text-transform: uppercase; }
+    .parl-gruppo { font-size: 0.78rem; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .parl-coalizione {
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.04em;
+      padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
+      white-space: nowrap;
+    }
     .coal-centrodestra { background: rgba(74, 143, 212, 0.12); color: #6ab4f4; border: 1px solid #2a5a8a; }
     .coal-centrosinistra { background: rgba(224, 85, 85, 0.12); color: #f08080; border: 1px solid #6a2a2a; }
     .coal-m5s { background: rgba(255, 200, 80, 0.12); color: #ffce5c; border: 1px solid #5a4520; }
@@ -59,11 +76,27 @@
     .coal-misto { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
     .coal-autonomie { background: rgba(76, 175, 130, 0.12); color: #5ec997; border: 1px solid #2a6a4a; }
     .coal-altri { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
-    .parl-gruppo { font-size: 0.72rem; color: var(--text2); margin-top: 6px; }
-    .parl-presenze { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 0.75rem; color: var(--text2); display: flex; align-items: center; gap: 6px; }
-    .presenze-placeholder { font-style: italic; opacity: 0.7; }
+    .parl-presenze {
+      font-size: 0.75rem; color: var(--text2); white-space: nowrap;
+      min-width: 80px; text-align: right;
+    }
+    .parl-presenze.high { color: var(--green); }
+    .parl-presenze.mid { color: var(--accent); }
+    .parl-presenze.low { color: var(--red); }
+    .parl-presenze.placeholder { font-style: italic; opacity: 0.55; }
 
-    .empty-state { text-align: center; padding: 60px 20px; color: var(--text2); grid-column: 1 / -1; }
+    /* Mobile */
+    @media (max-width: 700px) {
+      .parl-row {
+        grid-template-columns: 32px 1fr auto;
+        gap: 10px;
+        row-gap: 4px;
+      }
+      .parl-gruppo { grid-column: 1 / -1; padding-left: 44px; font-size: 0.72rem; }
+      .parl-presenze { font-size: 0.7rem; min-width: auto; }
+    }
+
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--text2); }
     .empty-state .icon { font-size: 3rem; margin-bottom: 16px; }
     .empty-state p { font-size: 0.9rem; }
     .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
@@ -103,7 +136,7 @@
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
   import { getFirestore, collection, getDocs, doc, getDoc } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
 
-  console.log('👥 Pagina Parlamentari v1 caricata');
+  console.log('👥 Parlamentari v2 — layout compatto a righe');
 
   const firebaseConfig = {
     apiKey: "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
@@ -134,6 +167,21 @@
     'altri': 'Altri',
   };
 
+  // Se il "gruppo" è un URI tipo http://dati.senato.it/gruppo/91 lo ripuliamo
+  // come fallback estetico finché il fetch non viene riaggiornato.
+  function cleanGruppoLabel(g) {
+    if (!g) return 'Non assegnato';
+    if (/^https?:\/\//.test(g)) {
+      // Estrai l'ultimo segmento dell'URI
+      const m = g.match(/\/([^\/]+)\/?$/);
+      const seg = m ? m[1] : g;
+      return `Gruppo Senato #${seg}`;
+    }
+    return g;
+  }
+
+  function shorten(s, n) { return s.length > n ? s.slice(0, n-1) + '…' : s; }
+
   async function loadParlamentari() {
     try {
       const snap = await getDocs(collection(db, 'parlamentari'));
@@ -145,10 +193,8 @@
       console.log(`📊 Caricati ${allParl.length} parlamentari`);
       if (allParl.length > 0) console.log('Esempio:', allParl[0]);
 
-      // Ordina per cognome
       allParl.sort((a, b) => (a.cognome || '').localeCompare(b.cognome || '', 'it'));
 
-      // Aggiorna last-update da meta
       try {
         const metaSnap = await getDoc(doc(db, 'meta', 'parlamentari'));
         if (metaSnap.exists()) {
@@ -159,7 +205,7 @@
               'Aggiornato: ' + d.toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
           }
         }
-      } catch (e) { /* meta opzionale */ }
+      } catch (e) {}
 
       render();
     } catch (e) {
@@ -179,29 +225,26 @@
       return;
     }
 
-    // Coalizioni disponibili (ordinate)
     const coalSet = new Set(allParl.map(p => p.coalizione || 'altri'));
     const coalizioni = ['tutti', ...Array.from(coalSet).sort()];
 
-    // Gruppi disponibili (filtrati per fonte e coalizione attive)
     let parlForGruppi = allParl;
     if (activeFonte !== 'tutti') parlForGruppi = parlForGruppi.filter(p => p.fonte === activeFonte);
     if (activeCoalizione !== 'tutti') parlForGruppi = parlForGruppi.filter(p => (p.coalizione || 'altri') === activeCoalizione);
-    const gruppoSet = new Set(parlForGruppi.map(p => p.gruppo).filter(Boolean));
+    const gruppoSet = new Set(parlForGruppi.map(p => cleanGruppoLabel(p.gruppo)).filter(Boolean));
     const gruppi = ['tutti', ...Array.from(gruppoSet).sort()];
 
-    // Applica filtri
     let filtered = allParl;
     if (activeFonte !== 'tutti') filtered = filtered.filter(p => p.fonte === activeFonte);
     if (activeCoalizione !== 'tutti') filtered = filtered.filter(p => (p.coalizione || 'altri') === activeCoalizione);
-    if (activeGruppo !== 'tutti') filtered = filtered.filter(p => p.gruppo === activeGruppo);
+    if (activeGruppo !== 'tutti') filtered = filtered.filter(p => cleanGruppoLabel(p.gruppo) === activeGruppo);
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       filtered = filtered.filter(p =>
         (p.nomeCompleto || '').toLowerCase().includes(q) ||
         (p.cognome || '').toLowerCase().includes(q) ||
         (p.nome || '').toLowerCase().includes(q) ||
-        (p.gruppo || '').toLowerCase().includes(q)
+        (cleanGruppoLabel(p.gruppo) || '').toLowerCase().includes(q)
       );
     }
 
@@ -223,21 +266,19 @@
         <div class="filter-divider"></div>
         <div class="filter-group">
           <span class="filter-label">Gruppo:</span>
-          ${gruppi.map(g => `<button class="filter-btn ${g===activeGruppo?'active':''}" data-action="setGruppo" data-value="${escapeAttr(g)}">${g === 'tutti' ? 'Tutti' : truncate(g, 30)}</button>`).join('')}
+          ${gruppi.map(g => `<button class="filter-btn ${g===activeGruppo?'active':''}" data-action="setGruppo" data-value="${escapeAttr(g)}">${g === 'tutti' ? 'Tutti' : shorten(g, 25)}</button>`).join('')}
         </div>` : ''}
         <span id="count-badge">${filtered.length} di ${allParl.length} parlamentari</span>
       </div>
       <div id="parl-list">
         ${filtered.length === 0
           ? `<div class="empty-state"><div class="icon">📭</div><p>Nessun parlamentare trovato.</p></div>`
-          : filtered.map(renderCard).join('')}
+          : filtered.map(renderRow).join('')}
       </div>
     `;
 
-    // Event handlers (no inline onclick per evitare problemi di escaping)
     document.getElementById('search-bar').addEventListener('input', (e) => {
       searchQuery = e.target.value;
-      // Re-render mantenendo focus
       const before = e.target.selectionStart;
       render();
       const sb = document.getElementById('search-bar');
@@ -245,7 +286,7 @@
     });
 
     document.querySelectorAll('[data-action]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', () => {
         const action = btn.dataset.action;
         const value = btn.dataset.value;
         if (action === 'setFonte') { activeFonte = value; activeGruppo = 'tutti'; }
@@ -256,31 +297,34 @@
     });
   }
 
-  function renderCard(p) {
-    const chamberClass = p.fonte === 'camera' ? 'chamber-camera' : 'chamber-senato';
-    const chamberLabel = p.fonte === 'camera' ? 'Camera' : 'Senato';
+  function renderRow(p) {
+    const chamberIcon = p.fonte === 'camera' ? '🏛' : '⚖️';
+    const chamberClass = p.fonte === 'camera' ? 'parl-chamber-camera' : 'parl-chamber-senato';
     const coalKey = (p.coalizione || 'altri').replace(/\s+/g, '-');
     const coalLabel = COAL_LABELS[p.coalizione] || p.coalizione || 'Altri';
     const link = p.link || '#';
-    const presenze = (typeof p.presenze === 'number')
-      ? `<span class="parl-presenze">📊 Partecipazione voti: <strong>${p.presenze.toFixed(1)}%</strong></span>`
-      : `<span class="parl-presenze presenze-placeholder">📊 Presenze: in arrivo</span>`;
+    const gruppo = cleanGruppoLabel(p.gruppo);
+    let presenzeHTML;
+    if (typeof p.presenze === 'number') {
+      const pct = p.presenze;
+      const cls = pct >= 80 ? 'high' : pct >= 50 ? 'mid' : 'low';
+      presenzeHTML = `<span class="parl-presenze ${cls}">${pct.toFixed(1)}%</span>`;
+    } else {
+      presenzeHTML = `<span class="parl-presenze placeholder">in arrivo</span>`;
+    }
     return `
-      <div class="parl-card">
+      <div class="parl-row">
+        <div class="parl-chamber-icon ${chamberClass}" title="${p.fonte === 'camera' ? 'Camera dei Deputati' : 'Senato della Repubblica'}">${chamberIcon}</div>
         <div class="parl-name"><a href="${link}" target="_blank" rel="noopener">${escapeHtml(p.nomeCompleto || (p.cognome + ' ' + p.nome))}</a></div>
-        <div class="parl-meta">
-          <span class="parl-chamber ${chamberClass}">${chamberLabel}</span>
-          <span class="parl-coalizione coal-${coalKey}">${coalLabel}</span>
-        </div>
-        <div class="parl-gruppo">${escapeHtml(p.gruppo || 'Non assegnato')}</div>
-        ${presenze}
+        <div class="parl-gruppo" title="${escapeAttr(gruppo)}">${escapeHtml(gruppo)}</div>
+        <span class="parl-coalizione coal-${coalKey}">${coalLabel}</span>
+        ${presenzeHTML}
       </div>
     `;
   }
 
   function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function escapeAttr(s) { return String(s ?? '').replace(/"/g, '&quot;'); }
-  function truncate(s, n) { return s.length > n ? s.slice(0, n-1) + '…' : s; }
 
   loadParlamentari();
 </script>
