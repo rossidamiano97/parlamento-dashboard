@@ -1,369 +1,337 @@
 // ========================================================================
-// PARLAMENTO DASHBOARD — Fetch Parlamentari v7 (Phase 1: lista + gruppi)
-// v7 — Senato: il nome del gruppo è in osr:denominazione (blank node).
-//      Aggiunta diagnostica + query 2-hop:
-//      gruppo → osr:denominazione → ?node → rdfs:label/dc:title
-//      con filtro su denominazione corrente (senza data fine).
+// PARLAMENTO DASHBOARD — Fetch Data v10
+// v10: safeDate corretto per gestire formato italiano DD/MM/YYYY.
+//      Risolve il bug per cui "08/01/2026" veniva letto come 1 agosto
+//      anziché 8 gennaio.
+// Focus: solo contenuto legislativo (proposto / in discussione / approvato)
 // ========================================================================
 
 import admin from 'firebase-admin';
+import { parseStringPromise } from 'xml2js';
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
-console.log('🏛  Parlamentari — Fetch v7 (Phase 1) avviato');
+console.log('🏛  Parlamento Dashboard v10 — Fetch avviato');
 console.log('📅 ', new Date().toLocaleString('it-IT'));
 console.log('─'.repeat(50));
 
 const UA = { 'User-Agent': 'Mozilla/5.0 (compatible; ParlamentoDashboard/1.0)' };
 
-// ═══════════════════════════════════════════════════════
-// COALITION MAPPING
-// ═══════════════════════════════════════════════════════
-const COALITION_MAP = [
-  { match: /fratelli d'italia|^fdi|\bfdi\b/i,                      coalizione: 'centrodestra' },
-  { match: /\blega\b|lsp|salvini premier/i,                        coalizione: 'centrodestra' },
-  { match: /forza italia|\bfi-|^fi\b|\bppe\b/i,                    coalizione: 'centrodestra' },
-  { match: /noi moderati|\bnm\(/i,                                  coalizione: 'centrodestra' },
-  { match: /civici/i,                                               coalizione: 'centrodestra' },
-  { match: /partito democratico|pd-idp|\bpd\b/i,                   coalizione: 'centrosinistra' },
-  { match: /alleanza verdi|\bavs\b|verdi.*sinistra/i,              coalizione: 'centrosinistra' },
-  { match: /movimento 5 stelle|\bm5s\b/i,                          coalizione: 'm5s' },
-  { match: /\bazione\b|\baz-|italia viva|\biv-|\bivrè\b|\brè\b/i,  coalizione: 'terzo polo' },
-  { match: /autonomie|\bsvp\b|trentino|valle.*aosta/i,             coalizione: 'autonomie' },
-  { match: /misto/i,                                                coalizione: 'misto' },
-];
-
-function mapCoalizione(gruppo) {
-  if (!gruppo) return 'altri';
-  for (const r of COALITION_MAP) if (r.match.test(gruppo)) return r.coalizione;
-  return 'altri';
+async function safeFetch(url, opts = {}) {
+  const res = await fetch(url, { headers: UA, ...opts });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res;
 }
 
 function makeId(prefix, str) {
-  return prefix + '-' + String(str)
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/gi, '-')
-    .toLowerCase()
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 100);
+  return prefix + '-' + String(str).replace(/https?:\/\//, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 80);
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+// FIX v10: parsing date italiano corretto.
+// Prima prova il formato italiano DD/MM/YYYY (e variants con - .),
+// poi fallback al parser standard di JavaScript.
+function safeDate(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+
+  // 1) Formato italiano puro: "DD/MM/YYYY" o "DD-MM-YYYY" o "DD.MM.YYYY"
+  let m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+  if (m) {
+    const giorno = parseInt(m[1]);
+    const mese = parseInt(m[2]);
+    const anno = parseInt(m[3]);
+    if (giorno >= 1 && giorno <= 31 && mese >= 1 && mese <= 12 && anno >= 2000 && anno <= 2035) {
+      const d = new Date(anno, mese - 1, giorno);
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+
+  // 2) RFC 822 / RFC 2822 in italiano: "Dom, 12 Mar 2026 10:00:00 GMT"
+  // Anche se ha mesi italiani abbreviati, JavaScript fallisce. Sostituiamo.
+  const monthMap = { 'gen':'Jan','feb':'Feb','mar':'Mar','apr':'Apr','mag':'May','giu':'Jun','lug':'Jul','ago':'Aug','set':'Sep','ott':'Oct','nov':'Nov','dic':'Dec' };
+  let normalized = s;
+  for (const [it, en] of Object.entries(monthMap)) {
+    normalized = normalized.replace(new RegExp(`\\b${it}\\b`, 'gi'), en);
+  }
+
+  // 3) Standard parser come fallback
+  try {
+    const d = new Date(normalized);
+    if (isNaN(d.getTime())) return null;
+    const y = d.getFullYear();
+    if (y < 2000 || y > 2035) return null;
+    return d;
+  } catch (e) { return null; }
+}
+
+async function parseRSS(url, fonte, tipo, stato) {
+  const res = await safeFetch(url);
+  const xml = await res.text();
+  const parsed = await parseStringPromise(xml);
+  const rssItems = parsed?.rss?.channel?.[0]?.item || parsed?.['rdf:RDF']?.item || [];
+  const items = [];
+  rssItems.slice(0, 50).forEach(it => {
+    const titolo = (it.title?.[0] || '').replace(/<[^>]+>/g, '').trim();
+    const link = (it.link?.[0] || it['rss:link']?.[0] || '').trim();
+    const descr = (it.description?.[0] || '').replace(/<[^>]+>/g, '').trim();
+    const pubDate = it.pubDate?.[0] || it['dc:date']?.[0] || '';
+    if (!titolo) return;
+    items.push({
+      id: makeId(`${fonte}-${tipo}`, link || titolo),
+      fonte, tipo, stato, titolo,
+      descrizione: descr.slice(0, 500),
+      link,
+      data: safeDate(pubDate),
+    });
+  });
+  return items;
+}
 
 // ═══════════════════════════════════════════════════════
-// SPARQL helper
+// SENATO — Solo feed legislativi, classificati per stato
 // ═══════════════════════════════════════════════════════
-async function runSPARQL(endpoint, query, opts = {}) {
-  const { retries = 3, retryDelay = 5000 } = opts;
-  let lastErr;
-  for (let attempt = 1; attempt <= retries; attempt++) {
+
+const SENATO_FEEDS = [
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedDDL.xml', tipo: 'disegno di legge', stato: 'proposto' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedADG.xml', tipo: 'atto del governo', stato: 'proposto' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedMR.xml', tipo: 'mozione', stato: 'proposto' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedEODG.xml', tipo: 'emendamento', stato: 'proposto' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedODGA.xml', tipo: 'ordine del giorno', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedCLA.xml', tipo: 'calendario', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedODGGC.xml', tipo: 'ordine del giorno commissioni', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedRSTA.xml', tipo: 'resoconto Assemblea', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedRSGC.xml', tipo: 'resoconto commissioni', stato: 'in discussione' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedMDDL.xml', tipo: 'legge approvata', stato: 'approvato' },
+  { url: 'https://www.senato.it/static/bgt/UltimiAtti/feedMDOC.xml', tipo: 'documento approvato', stato: 'approvato' },
+];
+
+async function fetchSenato() {
+  const items = [];
+  console.log('📥 Senato della Repubblica:');
+  for (const feed of SENATO_FEEDS) {
     try {
-      const res = await fetch(endpoint + '?' + new URLSearchParams({
-        query, format: 'application/sparql-results+json', 'default-graph-uri': ''
-      }), { headers: { ...UA, 'Accept': 'application/sparql-results+json' } });
-      if (res.status === 503 || res.status === 504 || res.status === 502) {
-        lastErr = new Error(`SPARQL HTTP ${res.status} (server overloaded)`);
-        if (attempt < retries) {
-          console.log(`   ↻ Tentativo ${attempt}/${retries} fallito (HTTP ${res.status}), retry tra ${retryDelay/1000}s...`);
-          await sleep(retryDelay);
-          continue;
-        }
-        throw lastErr;
-      }
-      if (!res.ok) throw new Error(`SPARQL HTTP ${res.status}`);
-      const json = await res.json();
-      return json?.results?.bindings || [];
+      const res = await parseRSS(feed.url, 'senato', feed.tipo, feed.stato);
+      items.push(...res);
+      console.log(`   ✓ [${feed.stato}] ${feed.tipo} (${res.length})`);
     } catch (e) {
-      lastErr = e;
-      if (attempt < retries && /network|fetch failed|timeout/i.test(e.message)) {
-        await sleep(retryDelay);
-        continue;
-      }
-      throw e;
+      console.warn(`   ⚠ ${feed.tipo}: ${e.message}`);
     }
   }
-  throw lastErr;
+  console.log(`   ✅ Senato totale: ${items.length} elementi`);
+  return items;
 }
 
 // ═══════════════════════════════════════════════════════
-// CAMERA — invariata
+// CAMERA — SPARQL + scraping mirato
 // ═══════════════════════════════════════════════════════
-const SPARQL_CAMERA = 'https://dati.camera.it/sparql';
-const LEG_19_CAMERA = 'http://dati.camera.it/ocd/legislatura.rdf/repubblica_19';
 
-async function fetchCameraDeputati() {
-  console.log('📥 Camera dei Deputati (SPARQL):');
+const SPARQL_URL = 'https://dati.camera.it/sparql';
+const LEG_19 = 'http://dati.camera.it/ocd/legislatura.rdf/repubblica_19';
+
+async function runSPARQL(query) {
+  const res = await fetch(SPARQL_URL + '?' + new URLSearchParams({
+    query, format: 'application/sparql-results+json', 'default-graph-uri': ''
+  }), { headers: { ...UA, 'Accept': 'application/sparql-results+json' } });
+  if (!res.ok) throw new Error(`SPARQL HTTP ${res.status}`);
+  const json = await res.json();
+  return json?.results?.bindings || [];
+}
+
+async function fetchCameraSPARQL() {
   const items = [];
-
-  const query = `
-    PREFIX ocd: <http://dati.camera.it/ocd/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    SELECT DISTINCT ?deputato ?cognome ?nome ?gruppoLabel WHERE {
-      ?deputato a ocd:deputato .
-      ?deputato ocd:rif_leg <${LEG_19_CAMERA}> .
-      OPTIONAL { ?deputato foaf:firstName ?nome }
-      OPTIONAL { ?deputato foaf:surname ?cognome }
-      OPTIONAL {
-        ?deputato ocd:aderisce ?adesione .
-        ?adesione ocd:rif_gruppoParlamentare ?gruppo .
-        ?gruppo rdfs:label ?gruppoLabel .
-        FILTER NOT EXISTS { ?adesione ocd:dataFine ?df }
-      }
-    }
-  `;
-
-  const rows = await runSPARQL(SPARQL_CAMERA, query, { retries: 6, retryDelay: 15000 });
-  console.log(`   → SPARQL ha restituito ${rows.length} righe`);
-  if (rows.length > 0) {
-    console.log(`   → Esempio prima riga:`, JSON.stringify(rows[0]).slice(0, 300));
+  try {
+    const query = `
+      PREFIX ocd: <http://dati.camera.it/ocd/>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX dc: <http://purl.org/dc/elements/1.1/>
+      SELECT DISTINCT ?pdl ?titolo ?numero ?dataPres WHERE {
+        ?pdl a ocd:progettoDiLegge .
+        ?pdl ocd:rif_leg <${LEG_19}> .
+        OPTIONAL { ?pdl dc:title ?titolo }
+        OPTIONAL { ?pdl ocd:numero ?numero }
+        OPTIONAL { ?pdl ocd:rif_presentazione ?presentazione . ?presentazione ocd:data ?dataPres }
+      } ORDER BY DESC(?dataPres) LIMIT 50
+    `;
+    const rows = await runSPARQL(query);
+    rows.forEach(r => {
+      const titolo = r.titolo?.value || `PdL n. ${r.numero?.value || '?'}`;
+      const link = r.pdl?.value || '';
+      const data = r.dataPres?.value ? safeDate(r.dataPres.value) : null;
+      items.push({
+        id: makeId('camera-pdl', link || titolo),
+        fonte: 'camera', tipo: 'disegno di legge', stato: 'proposto',
+        titolo, descrizione: '', link, data
+      });
+    });
+    console.log(`   ✓ SPARQL progetti di legge (${rows.length})`);
+  } catch (e) {
+    console.warn(`   ⚠ SPARQL PdL: ${e.message}`);
   }
 
-  const byDep = {};
-  rows.forEach(r => {
-    const url = r.deputato?.value;
-    const cognome = r.cognome?.value || '';
-    const nome = r.nome?.value || '';
-    const gruppo = r.gruppoLabel?.value;
-    if (!url || !cognome) return;
-    if (!byDep[url]) byDep[url] = { url, cognome, nome, gruppi: [] };
-    if (gruppo) byDep[url].gruppi.push(gruppo);
-  });
-  Object.values(byDep).forEach(d => {
-    const gruppo = d.gruppi[d.gruppi.length - 1] || 'Non assegnato';
-    items.push({
-      id: makeId('camera', `${d.cognome}-${d.nome}`),
-      fonte: 'camera',
-      cognome: d.cognome,
-      nome: d.nome,
-      nomeCompleto: `${d.cognome} ${d.nome}`.trim(),
-      gruppo,
-      coalizione: mapCoalizione(gruppo),
-      link: d.url,
-      presenze: null,
+  try {
+    const query = `
+      PREFIX ocd: <http://dati.camera.it/ocd/>
+      PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+      PREFIX dc: <http://purl.org/dc/elements/1.1/>
+      SELECT DISTINCT ?legge ?titolo ?dataApprovazione WHERE {
+        ?legge a ocd:legge .
+        ?legge ocd:rif_leg <${LEG_19}> .
+        OPTIONAL { ?legge dc:title ?titolo }
+        OPTIONAL { ?legge ocd:dataApprovazione ?dataApprovazione }
+      } ORDER BY DESC(?dataApprovazione) LIMIT 30
+    `;
+    const rows = await runSPARQL(query);
+    rows.forEach(r => {
+      const titolo = r.titolo?.value || 'Legge';
+      const link = r.legge?.value || '';
+      const data = r.dataApprovazione?.value ? safeDate(r.dataApprovazione.value) : null;
+      items.push({
+        id: makeId('camera-legge', link || titolo),
+        fonte: 'camera', tipo: 'legge approvata', stato: 'approvato',
+        titolo, descrizione: '', link, data
+      });
     });
-  });
-  console.log(`   ✅ Camera: ${items.length} deputati unici`);
-
-  if (items.length === 0) {
-    throw new Error('Camera ha restituito 0 deputati');
+    console.log(`   ✓ SPARQL leggi approvate (${rows.length})`);
+  } catch (e) {
+    console.warn(`   ⚠ SPARQL leggi: ${e.message}`);
   }
 
   return items;
 }
 
-// ═══════════════════════════════════════════════════════
-// SENATO — v7
-// Catena scoperta:
-//   senatore → ocd:aderisce → adesione → osr:gruppo → gruppo
-//   gruppo → osr:denominazione → denomNode → ???
-// In v7 esploriamo cosa c'è dentro denomNode e poi facciamo
-// query 2-hop per estrarre il nome.
-// ═══════════════════════════════════════════════════════
-const SPARQL_SENATO = 'http://dati.senato.it/sparql';
+async function fetchCameraScraping() {
+  const items = [];
 
-async function diagnoseDenominazione(gruppoUri) {
-  console.log(`   🔬 Diagnostica blank node osr:denominazione di ${gruppoUri}...`);
-  const query = `
-    PREFIX osr: <http://dati.senato.it/osr/>
-    SELECT DISTINCT ?p ?o WHERE {
-      <${gruppoUri}> osr:denominazione ?denom .
-      ?denom ?p ?o .
-    } LIMIT 60
-  `;
   try {
-    const rows = await runSPARQL(SPARQL_SENATO, query, { retries: 2 });
-    console.log(`   📋 Predicati DENTRO il blank node denominazione (${rows.length}):`);
+    const res = await safeFetch('https://www.camera.it/leg19/207');
+    const html = await res.text();
+    const matches = [...html.matchAll(/<a[^>]+href="(\/leg19\/410\?idSeduta=\d+[^"]*)"[^>]*>\s*([^<]{10,400})\s*<\/a>/gi)];
     const seen = new Set();
-    rows.forEach(r => {
-      const p = r.p?.value || '';
-      const o = r.o?.value || '';
-      const oShort = o.length > 100 ? o.slice(0, 100) + '...' : o;
-      const key = `${p}::${oShort}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      console.log(`      ${p}  →  ${oShort}`);
+    matches.slice(0, 40).forEach(([_, href, testo]) => {
+      const titolo = testo.replace(/\s+/g, ' ').trim();
+      if (!titolo || seen.has(titolo)) return;
+      if (/^(guarda|odg|leggi|vai|apri|visualizza)/i.test(titolo)) return;
+      seen.add(titolo);
+      const link = `https://www.camera.it${href}`;
+      items.push({
+        id: makeId('camera-resoconto', link),
+        fonte: 'camera', tipo: 'resoconto Assemblea', stato: 'in discussione',
+        titolo: `Seduta: ${titolo}`, descrizione: '', link, data: new Date()
+      });
     });
+    console.log(`   ✓ Resoconti Assemblea (${seen.size})`);
   } catch (e) {
-    console.log(`   ⚠ Diagnostica denominazione fallita: ${e.message}`);
+    console.warn(`   ⚠ Resoconti Assemblea: ${e.message}`);
   }
-}
-
-async function resolveGruppiNomi(gruppiUris) {
-  if (gruppiUris.length === 0) return {};
-  const valuesList = gruppiUris.map(u => `<${u}>`).join(' ');
-
-  // Strategia 1: 2-hop con label/title sul blank node denominazione
-  // Prendiamo TUTTE le denominazioni, poi nel codice scegliamo
-  // quella corrente (con osr:fine assente, o la più recente).
-  const query1 = `
-    PREFIX osr: <http://dati.senato.it/osr/>
-    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    PREFIX dc: <http://purl.org/dc/elements/1.1/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    SELECT DISTINCT ?gruppoUri ?nome ?inizio ?fine WHERE {
-      VALUES ?gruppoUri { ${valuesList} }
-      ?gruppoUri osr:denominazione ?denom .
-      OPTIONAL { ?denom rdfs:label ?label }
-      OPTIONAL { ?denom dc:title ?title }
-      OPTIONAL { ?denom foaf:name ?fname }
-      OPTIONAL { ?denom osr:nome ?nomeOsr }
-      OPTIONAL { ?denom osr:descrizione ?descrOsr }
-      OPTIONAL { ?denom osr:inizio ?inizio }
-      OPTIONAL { ?denom osr:fine ?fine }
-      BIND(COALESCE(?label, ?title, ?fname, ?nomeOsr, ?descrOsr) AS ?nome)
-      FILTER(BOUND(?nome))
-    }
-  `;
-  console.log(`   → Risoluzione nomi 2-hop per ${gruppiUris.length} URI gruppi...`);
-  const denominazioni = {}; // uri → [{nome, inizio, fine}]
 
   try {
-    const rows = await runSPARQL(SPARQL_SENATO, query1, { retries: 3 });
-    console.log(`      → Query 2-hop: ${rows.length} righe`);
-    if (rows.length > 0) {
-      console.log(`      Esempio: ${JSON.stringify(rows[0]).slice(0, 400)}`);
-    }
-    rows.forEach(r => {
-      const uri = r.gruppoUri?.value;
-      const nome = r.nome?.value;
-      const inizio = r.inizio?.value || null;
-      const fine = r.fine?.value || null;
-      if (!uri || !nome) return;
-      if (!denominazioni[uri]) denominazioni[uri] = [];
-      denominazioni[uri].push({ nome, inizio, fine });
+    const res = await safeFetch('https://www.camera.it/leg19/577');
+    const html = await res.text();
+    const matches = [...html.matchAll(/Decreto[\s-]*Legge[^<]{5,200}/gi)];
+    const seen = new Set();
+    matches.slice(0, 20).forEach(([testo]) => {
+      const titolo = testo.replace(/\s+/g, ' ').trim();
+      if (!titolo || seen.has(titolo) || titolo.length < 20) return;
+      seen.add(titolo);
+      items.push({
+        id: makeId('camera-decreto', titolo),
+        fonte: 'camera', tipo: 'decreto legge', stato: 'in discussione',
+        titolo, descrizione: '',
+        link: 'https://www.camera.it/leg19/577',
+        data: new Date()
+      });
     });
+    console.log(`   ✓ Decreti-legge (${seen.size})`);
   } catch (e) {
-    console.log(`      ⚠ Query 2-hop fallita: ${e.message}`);
+    console.warn(`   ⚠ Decreti-legge: ${e.message}`);
   }
 
-  // Per ogni gruppo, scegli la denominazione "migliore":
-  //   1. Una senza fine (corrente)
-  //   2. Quella con la data inizio più recente
-  //   3. La prima
-  const map = {};
-  for (const [uri, denoms] of Object.entries(denominazioni)) {
-    let best = denoms.find(d => !d.fine);
-    if (!best) {
-      best = [...denoms].sort((a, b) => (b.inizio || '').localeCompare(a.inizio || ''))[0];
-    }
-    if (best) map[uri] = best.nome;
-  }
-
-  // Se non abbiamo trovato nessun nome, diagnostichiamo
-  if (Object.keys(map).length === 0 && gruppiUris.length > 0) {
-    console.log(`   ⚠ Nessun nome trovato — diagnostica blank node denominazione...`);
-    await diagnoseDenominazione(gruppiUris[0]);
-  }
-  return map;
-}
-
-async function fetchSenatoSenatori() {
-  console.log('📥 Senato della Repubblica (SPARQL):');
-  const items = [];
-
-  const queryLista = `
-    PREFIX osr: <http://dati.senato.it/osr/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    SELECT DISTINCT ?senatore ?cognome ?nome WHERE {
-      ?senatore a osr:Senatore .
-      ?senatore osr:mandato ?mandato .
-      ?mandato osr:legislatura 19 .
-      OPTIONAL { ?senatore foaf:firstName ?nome }
-      OPTIONAL { ?senatore foaf:lastName ?cognome }
-      OPTIONAL { ?senatore foaf:surname ?cognome }
-    }
-  `;
-
-  let rows = [];
   try {
-    rows = await runSPARQL(SPARQL_SENATO, queryLista, { retries: 3 });
-    console.log(`   → Lista senatori: ${rows.length} righe`);
+    const res = await safeFetch('https://aic.camera.it/aic/search.html?legislatura=19');
+    const html = await res.text();
+    const rows = [...html.matchAll(/<tr[^>]*>[\s\S]*?<\/tr>/gi)];
+    const seen = new Set();
+    let count = 0;
+    rows.forEach(([tr]) => {
+      if (count >= 30) return;
+      const tipoMatch = tr.match(/>(Interrogazione[^<]*|Mozione[^<]*|Interpellanza[^<]*|Risoluzione[^<]*|Ordine del [Gg]iorno[^<]*)</);
+      const linkMatch = tr.match(/href="([^"]+)"/);
+      const titoloMatch = tr.match(/title="([^"]+)"/);
+      if (!tipoMatch) return;
+      const titolo = (titoloMatch?.[1] || tipoMatch[1]).replace(/\s+/g, ' ').trim();
+      if (!titolo || seen.has(titolo) || titolo.length < 10) return;
+      seen.add(titolo);
+      const href = linkMatch?.[1] || '';
+      const link = href.startsWith('http') ? href : `https://aic.camera.it${href}`;
+      const tipoRaw = tipoMatch[1].toLowerCase();
+      const tipo = tipoRaw.includes('mozione') ? 'mozione' :
+                   tipoRaw.includes('interroga') ? 'interrogazione' :
+                   tipoRaw.includes('interpella') ? 'interpellanza' :
+                   tipoRaw.includes('risoluz') ? 'risoluzione' : 'ordine del giorno';
+      items.push({
+        id: makeId(`camera-${tipo}`, link || titolo),
+        fonte: 'camera', tipo, stato: 'proposto',
+        titolo, descrizione: '', link, data: new Date()
+      });
+      count++;
+    });
+    console.log(`   ✓ Atti di indirizzo (${seen.size})`);
   } catch (e) {
-    console.error(`   ❌ Lista senatori fallita: ${e.message}`);
-    return items;
+    console.warn(`   ⚠ Atti di indirizzo: ${e.message}`);
   }
 
-  console.log('   → Query gruppi (URI) per legislatura 19...');
-  const queryGruppiUri = `
-    PREFIX ocd: <http://dati.camera.it/ocd/>
-    PREFIX osr: <http://dati.senato.it/osr/>
-    SELECT DISTINCT ?senatore ?gruppoUri WHERE {
-      ?senatore a osr:Senatore .
-      ?senatore ocd:aderisce ?adesione .
-      ?adesione osr:legislatura 19 .
-      ?adesione osr:gruppo ?gruppoUri .
-    }
-  `;
-
-  const gruppiUriBySenatore = {};
-  const tutteUriGruppi = new Set();
   try {
-    const grows = await runSPARQL(SPARQL_SENATO, queryGruppiUri, { retries: 3 });
-    console.log(`      → ${grows.length} righe`);
-    grows.forEach(g => {
-      const sen = g.senatore?.value;
-      const uri = g.gruppoUri?.value;
-      if (sen && uri && !gruppiUriBySenatore[sen]) {
-        gruppiUriBySenatore[sen] = uri;
-        tutteUriGruppi.add(uri);
-      }
+    const res = await safeFetch('https://www.camera.it/leg19/210');
+    const html = await res.text();
+    const matches = [...html.matchAll(/<a[^>]+href="(\/leg19\/[^"]*resoconto[^"]*)"[^>]*>\s*([^<]{10,300})\s*<\/a>/gi)];
+    const seen = new Set();
+    matches.slice(0, 30).forEach(([_, href, testo]) => {
+      const titolo = testo.replace(/\s+/g, ' ').trim();
+      if (!titolo || seen.has(titolo)) return;
+      seen.add(titolo);
+      const link = `https://www.camera.it${href}`;
+      items.push({
+        id: makeId('camera-resoconto-comm', link),
+        fonte: 'camera', tipo: 'resoconto commissioni', stato: 'in discussione',
+        titolo: `Commissione: ${titolo}`, descrizione: '', link, data: new Date()
+      });
     });
+    console.log(`   ✓ Resoconti Commissioni (${seen.size})`);
   } catch (e) {
-    console.log(`      ⚠ Query gruppi URI fallita: ${e.message}`);
+    console.warn(`   ⚠ Resoconti Commissioni: ${e.message}`);
   }
 
-  console.log(`   📊 ${Object.keys(gruppiUriBySenatore).length} senatori con URI gruppo, ${tutteUriGruppi.size} gruppi unici`);
-
-  const nomiGruppi = await resolveGruppiNomi([...tutteUriGruppi]);
-  console.log(`   📊 Nomi risolti: ${Object.keys(nomiGruppi).length} di ${tutteUriGruppi.size}`);
-  if (Object.keys(nomiGruppi).length > 0) {
-    console.log(`   📝 Mappa nomi gruppi:`);
-    Object.entries(nomiGruppi).forEach(([uri, nome]) => {
-      console.log(`      ${uri.split('/').pop()} → ${nome}`);
-    });
-  }
-
-  // Assembla
-  const bySen = {};
-  rows.forEach(r => {
-    const url = r.senatore?.value;
-    const cognome = r.cognome?.value || '';
-    const nome = r.nome?.value || '';
-    if (!url || !cognome) return;
-    if (!bySen[url]) bySen[url] = { url, cognome, nome };
-  });
-
-  Object.values(bySen).forEach(s => {
-    const uriGruppo = gruppiUriBySenatore[s.url];
-    const gruppo = uriGruppo ? (nomiGruppi[uriGruppo] || uriGruppo) : 'Non assegnato';
-    items.push({
-      id: makeId('senato', `${s.cognome}-${s.nome}`),
-      fonte: 'senato',
-      cognome: s.cognome,
-      nome: s.nome,
-      nomeCompleto: `${s.cognome} ${s.nome}`.trim(),
-      gruppo,
-      coalizione: mapCoalizione(gruppo),
-      link: s.url,
-      presenze: null,
-    });
-  });
-
-  console.log(`   ✅ Senato: ${items.length} senatori unici`);
   return items;
+}
+
+async function fetchCamera() {
+  console.log('📥 Camera dei Deputati:');
+  const items = [];
+  try {
+    items.push(...await fetchCameraSPARQL());
+  } catch (e) { console.warn(`   ⚠ SPARQL: ${e.message}`); }
+  items.push(...await fetchCameraScraping());
+  const dedup = Object.values(Object.fromEntries(items.map(i => [i.id, i])));
+  console.log(`   ✅ Camera totale: ${dedup.length} elementi unici`);
+  return dedup;
 }
 
 // ═══════════════════════════════════════════════════════
 // SAVE TO FIRESTORE
 // ═══════════════════════════════════════════════════════
-function sanitize(item) {
+
+function sanitizeForFirestore(item) {
   const clean = {};
   for (const [k, v] of Object.entries(item)) {
     if (v === undefined) continue;
     if (v === null) { clean[k] = null; continue; }
+    if (v instanceof Date) {
+      if (isNaN(v.getTime())) { clean[k] = null; continue; }
+      clean[k] = admin.firestore.Timestamp.fromDate(v);
+      continue;
+    }
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
       clean[k] = v;
     }
@@ -374,80 +342,60 @@ function sanitize(item) {
 async function saveItems(items) {
   if (!items.length) {
     console.log('─'.repeat(50));
-    console.log('   → Nessun parlamentare da salvare. Esco.');
+    console.log('   → Nessun elemento da salvare.');
     return;
   }
+  const unique = Object.values(Object.fromEntries(items.map(i => [i.id, i])));
   console.log('─'.repeat(50));
-  console.log(`💾 Salvataggio ${items.length} parlamentari...`);
+  console.log(`💾 Salvataggio ${unique.length} elementi (${items.length - unique.length} duplicati rimossi)...`);
 
   const now = admin.firestore.Timestamp.now();
   const chunkSize = 400;
-  let saved = 0, skipped = 0;
+  let savedTotal = 0, skippedTotal = 0;
 
-  for (let i = 0; i < items.length; i += chunkSize) {
-    const chunk = items.slice(i, i + chunkSize);
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
     const batch = db.batch();
+    let batchCount = 0;
     chunk.forEach(item => {
       try {
-        const clean = sanitize(item);
+        const clean = sanitizeForFirestore(item);
         clean.fetchedAt = now;
-        const ref = db.collection('parlamentari').doc(item.id);
+        clean.timestamp = now;
+        const ref = db.collection('notizie').doc(item.id);
         batch.set(ref, clean, { merge: true });
-      } catch (e) { skipped++; }
+        batchCount++;
+      } catch (e) { skippedTotal++; }
     });
     try {
       await batch.commit();
-      saved += chunk.length;
-      console.log(`   → Batch ${Math.floor(i/chunkSize)+1}: ${chunk.length} salvati`);
+      savedTotal += batchCount;
+      console.log(`   → Batch ${Math.floor(i/chunkSize)+1}: ${batchCount} salvati`);
     } catch (e) {
       console.error(`   ❌ Batch fallito: ${e.message}`);
+      for (const item of chunk) {
+        try {
+          const clean = sanitizeForFirestore(item);
+          clean.fetchedAt = now;
+          clean.timestamp = now;
+          await db.collection('notizie').doc(item.id).set(clean, { merge: true });
+          savedTotal++;
+        } catch (e2) { skippedTotal++; }
+      }
     }
   }
-
-  await db.collection('meta').doc('parlamentari').set({
-    lastUpdate: now,
-    totalCount: items.length,
-    cameraCount: items.filter(i => i.fonte === 'camera').length,
-    senatoCount: items.filter(i => i.fonte === 'senato').length,
-  }, { merge: true });
-
-  console.log(`✅ Totale salvati: ${saved} (skipped: ${skipped})`);
+  console.log(`✅ Totale salvati: ${savedTotal} (skipped: ${skippedTotal})`);
 }
 
 (async () => {
-  let camera = [], senato = [];
-  let cameraOk = false, senatoOk = false;
-
   try {
-    camera = await fetchCameraDeputati();
-    cameraOk = true;
+    const camera = await fetchCamera();
+    const senato = await fetchSenato();
+    await saveItems([...camera, ...senato]);
+    console.log('─'.repeat(50));
+    console.log('✅ Completato!');
   } catch (err) {
-    console.error(`⚠ Camera fallita: ${err.message}`);
-  }
-
-  try {
-    senato = await fetchSenatoSenatori();
-    senatoOk = senato.length > 0;
-  } catch (err) {
-    console.error(`⚠ Senato fallita: ${err.message}`);
-  }
-
-  if (camera.length === 0 && senato.length === 0) {
-    console.error('❌ Entrambe le fonti hanno fallito.');
+    console.error('❌ Errore fatale:', err);
     process.exit(1);
   }
-
-  await saveItems([...camera, ...senato]);
-
-  await db.collection('meta').doc('parlamentari').set({
-    lastRun: admin.firestore.Timestamp.now(),
-    cameraOk,
-    senatoOk,
-  }, { merge: true });
-
-  console.log('─'.repeat(50));
-  if (!cameraOk) {
-    console.warn('⚠  Camera fallita ma run continua: dati Camera precedenti restano validi.');
-  }
-  console.log('✅ Completato!');
 })();
