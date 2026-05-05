@@ -96,7 +96,7 @@
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
   import { getFirestore, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js';
 
-  console.log('🏛 Dashboard Parlamento v9 caricato (stato derivato + debug date)');
+  console.log('🏛 Dashboard Parlamento v10 — fix parsing date italiane');
 
   const firebaseConfig = {
     apiKey: "AIzaSyArNhbyj_HDtPripwDCG-sjbw2CvcQu9Ok",
@@ -134,44 +134,71 @@
     return 'badge-default';
   }
 
-  // PARSER DATE ROBUSTO - gestisce Firestore Timestamp, ISO, DD/MM/YYYY
-  // NOTA: NON includiamo 'timestamp' e 'fetchedAt' perche' sono momento del fetch,
-  // non data reale dell'atto.
+  // FIX v10: Estrae data DD/MM/YYYY dal titolo PRIMA di tutto.
+  // I feed RSS Senato hanno pubDate ambigui che JavaScript interpreta in formato
+  // americano (MM/DD/YYYY) quando ricevuti come stringa "12/03/2026", causando
+  // date salvate scorrettamente in Firestore. Il titolo invece è sempre in
+  // formato italiano DD/MM/YYYY ed è la fonte autoritativa.
+  function extractDateFromTitle(titolo) {
+    if (!titolo) return null;
+    // Cerca un pattern DD/MM/YYYY (con / - .) nel titolo
+    const m = String(titolo).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+    if (!m) return null;
+    const giorno = parseInt(m[1]);
+    const mese = parseInt(m[2]);
+    const anno = parseInt(m[3]);
+    // Sanity check: giorno 1-31, mese 1-12, anno ragionevole
+    if (giorno < 1 || giorno > 31) return null;
+    if (mese < 1 || mese > 12) return null;
+    if (anno < 2020 || anno > 2035) return null;
+    const d = new Date(anno, mese - 1, giorno);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function parseFirestoreDate(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object' && typeof raw.toDate === 'function') {
+      try { const d = raw.toDate(); if (!isNaN(d.getTime())) return d; } catch(e) {}
+    }
+    if (typeof raw === 'object' && typeof raw.seconds === 'number') {
+      const d = new Date(raw.seconds * 1000);
+      if (!isNaN(d.getTime())) return d;
+    }
+    const d = new Date(raw);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // PARSER DATE v10:
+  // 1. Priorità al titolo (sempre formato italiano DD/MM/YYYY corretto)
+  // 2. Fallback al campo data Firestore (potrebbe essere errato per ambiguità US/IT)
+  // 3. Sanity check finale: se la data è > 90 giorni nel futuro, è probabilmente
+  //    sbagliata e proviamo l'inversione MM<->DD se è ancora plausibile
   function parseItemDate(item) {
+    // 1. Prova prima il titolo
+    const fromTitle = extractDateFromTitle(item.titolo);
+    if (fromTitle) return fromTitle;
+    // 2. Fallback ai campi data
     const candidates = [item.data, item.pubDate, item.dataPubblicazione];
     for (const raw of candidates) {
-      if (!raw) continue;
-      // Firestore Timestamp: oggetto con metodo .toDate()
-      if (typeof raw === 'object' && typeof raw.toDate === 'function') {
-        try {
-          const d = raw.toDate();
-          if (!isNaN(d.getTime())) return d;
-        } catch(e) {}
+      const d = parseFirestoreDate(raw);
+      if (!d) continue;
+      // Se la data è > 90 giorni nel futuro, è sospetta (formato US/IT confuso).
+      // Proviamo a invertire DD/MM e vedere se diventa una data valida nel passato.
+      const now = new Date();
+      const giorniFuturi = (d - now) / (24*3600*1000);
+      if (giorniFuturi > 90) {
+        const giorno = d.getDate();
+        const mese = d.getMonth() + 1;
+        if (giorno >= 1 && giorno <= 12 && mese >= 1 && mese <= 31) {
+          // Inversione: il "giorno" è in realtà il mese, e il "mese" è il giorno
+          const corrected = new Date(d.getFullYear(), giorno - 1, mese);
+          const corrGiorniFuturi = (corrected - now) / (24*3600*1000);
+          if (corrGiorniFuturi < giorniFuturi) {
+            return corrected;
+          }
+        }
       }
-      // Firestore Timestamp serializzato: {seconds, nanoseconds}
-      if (typeof raw === 'object' && typeof raw.seconds === 'number') {
-        const d = new Date(raw.seconds * 1000);
-        if (!isNaN(d.getTime())) return d;
-      }
-      // Stringa ISO o simile
-      let d = new Date(raw);
-      if (!isNaN(d.getTime())) return d;
-      // Formato italiano DD/MM/YYYY
-      const m = String(raw).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
-      if (m) {
-        let year = parseInt(m[3]);
-        if (year < 100) year += 2000;
-        d = new Date(year, parseInt(m[2]) - 1, parseInt(m[1]));
-        if (!isNaN(d.getTime())) return d;
-      }
-    }
-    // Prova ad estrarre una data dal titolo (es. "12/03/2026" nel titolo)
-    if (item.titolo) {
-      const m = String(item.titolo).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
-      if (m) {
-        const d = new Date(parseInt(m[3]), parseInt(m[2]) - 1, parseInt(m[1]));
-        if (!isNaN(d.getTime())) return d;
-      }
+      return d;
     }
     return null;
   }
@@ -237,7 +264,6 @@
       if (allItems.length > 0) {
         console.log('📄 Primo elemento:', allItems[0]);
         console.log('📅 Data parsata del primo elemento:', parseItemDate(allItems[0]));
-        console.log('🔎 Stato derivato del primo elemento:', deriveStato(allItems[0]));
       }
 
       allItems.sort((a, b) => {
@@ -262,14 +288,13 @@
     }
   }
 
-  // Deriva lo stato dal tipo se non è presente esplicitamente
   function deriveStato(item) {
     if (item.stato) return item.stato.toLowerCase();
     const t = (item.tipo || '').toLowerCase();
     if (/legge approvata|approvato|documento approvato/.test(t)) return 'approvato';
     if (/disegno di legge|atto del governo|mozione|interrogazione|interpellanza|risoluzione|emendamento|atto$/.test(t)) return 'proposto';
     if (/ordine del giorno|calendario|resoconto|seduta|commissione|decreto|agenda/.test(t)) return 'in discussione';
-    return 'in discussione'; // default per elementi non classificabili
+    return 'in discussione';
   }
 
   function renderSource() {
@@ -346,10 +371,9 @@
   }
 
   window.riassumi = async function(id) {
-    console.log('🔘 Click Riassumi su', id);
     if (remainingToday() === 0) return;
     const item = itemRegistry[id];
-    if (!item) { console.error('Item non trovato:', id); return; }
+    if (!item) return;
 
     const btn = document.getElementById('btn-' + id);
     const summaryDiv = document.getElementById('summary-' + id);
@@ -365,7 +389,6 @@
     summaryDiv.innerHTML = '<div class="ai-summary" style="font-style:italic;opacity:0.8">Scarico il documento ufficiale e lo analizzo… può richiedere 10-30 secondi per PDF grandi.</div>';
 
     try {
-      console.log('📡 Chiamo Worker:', WORKER_URL);
       const res = await fetch(WORKER_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -377,11 +400,8 @@
         })
       });
       const data = await res.json();
-      console.log('📥 Worker response:', data);
 
-      if (!res.ok || data.error) {
-        throw new Error(data.error?.message || `HTTP ${res.status}`);
-      }
+      if (!res.ok || data.error) throw new Error(data.error?.message || `HTTP ${res.status}`);
       const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) throw new Error('Risposta vuota dal Worker');
 
@@ -389,10 +409,9 @@
       summaryCache[id] = text;
       showSummary(id, text, btn, summaryDiv);
     } catch(e) {
-      console.error('❌ Errore Riassumi:', e);
       btn.disabled = false;
       btn.textContent = '✦ Riassumi';
-      summaryDiv.innerHTML = `<div class="ai-summary" style="border-color:var(--red)">⚠️ Errore: ${e.message}<br><small style="opacity:0.7">Apri la console (F12) per dettagli.</small></div>`;
+      summaryDiv.innerHTML = `<div class="ai-summary" style="border-color:var(--red)">⚠️ Errore: ${e.message}</div>`;
     }
   };
 
