@@ -1,9 +1,9 @@
 // ========================================================================
-// PARLAMENTO DASHBOARD — Fetch Parlamentari v6 (Phase 1: lista + gruppi)
-// v6 — Senato: aggiunta query per risolvere i nomi dei gruppi (l'URI
-//      http://dati.senato.it/gruppo/N non è leggibile).
-//      Camera: retry più aggressivi (6 tentativi, fino a 30s) ed exit 0
-//      anche se Camera fallisce (i dati Camera in Firestore restano validi).
+// PARLAMENTO DASHBOARD — Fetch Parlamentari v7 (Phase 1: lista + gruppi)
+// v7 — Senato: il nome del gruppo è in osr:denominazione (blank node).
+//      Aggiunta diagnostica + query 2-hop:
+//      gruppo → osr:denominazione → ?node → rdfs:label/dc:title
+//      con filtro su denominazione corrente (senza data fine).
 // ========================================================================
 
 import admin from 'firebase-admin';
@@ -12,7 +12,7 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
-console.log('🏛  Parlamentari — Fetch v6 (Phase 1) avviato');
+console.log('🏛  Parlamentari — Fetch v7 (Phase 1) avviato');
 console.log('📅 ', new Date().toLocaleString('it-IT'));
 console.log('─'.repeat(50));
 
@@ -88,7 +88,7 @@ async function runSPARQL(endpoint, query, opts = {}) {
 }
 
 // ═══════════════════════════════════════════════════════
-// CAMERA — invariata (con retry più aggressivi)
+// CAMERA — invariata
 // ═══════════════════════════════════════════════════════
 const SPARQL_CAMERA = 'https://dati.camera.it/sparql';
 const LEG_19_CAMERA = 'http://dati.camera.it/ocd/legislatura.rdf/repubblica_19';
@@ -115,7 +115,6 @@ async function fetchCameraDeputati() {
     }
   `;
 
-  // 6 tentativi con backoff progressivo
   const rows = await runSPARQL(SPARQL_CAMERA, query, { retries: 6, retryDelay: 15000 });
   console.log(`   → SPARQL ha restituito ${rows.length} righe`);
   if (rows.length > 0) {
@@ -156,67 +155,107 @@ async function fetchCameraDeputati() {
 }
 
 // ═══════════════════════════════════════════════════════
-// SENATO — v6: aggiunta risoluzione nomi gruppi
+// SENATO — v7
+// Catena scoperta:
+//   senatore → ocd:aderisce → adesione → osr:gruppo → gruppo
+//   gruppo → osr:denominazione → denomNode → ???
+// In v7 esploriamo cosa c'è dentro denomNode e poi facciamo
+// query 2-hop per estrarre il nome.
 // ═══════════════════════════════════════════════════════
 const SPARQL_SENATO = 'http://dati.senato.it/sparql';
 
-async function diagnoseGruppo(gruppoUri) {
-  console.log(`   🔬 Diagnostica predicati del gruppo ${gruppoUri}...`);
-  const query = `SELECT DISTINCT ?p ?o WHERE { <${gruppoUri}> ?p ?o } LIMIT 50`;
+async function diagnoseDenominazione(gruppoUri) {
+  console.log(`   🔬 Diagnostica blank node osr:denominazione di ${gruppoUri}...`);
+  const query = `
+    PREFIX osr: <http://dati.senato.it/osr/>
+    SELECT DISTINCT ?p ?o WHERE {
+      <${gruppoUri}> osr:denominazione ?denom .
+      ?denom ?p ?o .
+    } LIMIT 60
+  `;
   try {
     const rows = await runSPARQL(SPARQL_SENATO, query, { retries: 2 });
-    console.log(`   📋 Predicati del gruppo (${rows.length}):`);
+    console.log(`   📋 Predicati DENTRO il blank node denominazione (${rows.length}):`);
+    const seen = new Set();
     rows.forEach(r => {
       const p = r.p?.value || '';
       const o = r.o?.value || '';
       const oShort = o.length > 100 ? o.slice(0, 100) + '...' : o;
+      const key = `${p}::${oShort}`;
+      if (seen.has(key)) return;
+      seen.add(key);
       console.log(`      ${p}  →  ${oShort}`);
     });
   } catch (e) {
-    console.log(`   ⚠ Diagnostica gruppo fallita: ${e.message}`);
+    console.log(`   ⚠ Diagnostica denominazione fallita: ${e.message}`);
   }
 }
 
 async function resolveGruppiNomi(gruppiUris) {
-  // Costruisce una query VALUES per chiedere tutti i nomi in un colpo solo
   if (gruppiUris.length === 0) return {};
   const valuesList = gruppiUris.map(u => `<${u}>`).join(' ');
 
-  // Tentiamo prima con OPTIONAL su tutti i predicati noti
-  const query = `
+  // Strategia 1: 2-hop con label/title sul blank node denominazione
+  // Prendiamo TUTTE le denominazioni, poi nel codice scegliamo
+  // quella corrente (con osr:fine assente, o la più recente).
+  const query1 = `
+    PREFIX osr: <http://dati.senato.it/osr/>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX dc: <http://purl.org/dc/elements/1.1/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    PREFIX osr: <http://dati.senato.it/osr/>
-    SELECT DISTINCT ?gruppoUri ?label ?title ?name ?nome WHERE {
+    SELECT DISTINCT ?gruppoUri ?nome ?inizio ?fine WHERE {
       VALUES ?gruppoUri { ${valuesList} }
-      OPTIONAL { ?gruppoUri rdfs:label ?label }
-      OPTIONAL { ?gruppoUri dc:title ?title }
-      OPTIONAL { ?gruppoUri foaf:name ?name }
-      OPTIONAL { ?gruppoUri osr:nome ?nome }
+      ?gruppoUri osr:denominazione ?denom .
+      OPTIONAL { ?denom rdfs:label ?label }
+      OPTIONAL { ?denom dc:title ?title }
+      OPTIONAL { ?denom foaf:name ?fname }
+      OPTIONAL { ?denom osr:nome ?nomeOsr }
+      OPTIONAL { ?denom osr:descrizione ?descrOsr }
+      OPTIONAL { ?denom osr:inizio ?inizio }
+      OPTIONAL { ?denom osr:fine ?fine }
+      BIND(COALESCE(?label, ?title, ?fname, ?nomeOsr, ?descrOsr) AS ?nome)
+      FILTER(BOUND(?nome))
     }
   `;
-  console.log(`   → Risoluzione nomi per ${gruppiUris.length} URI gruppi...`);
-  const map = {};
+  console.log(`   → Risoluzione nomi 2-hop per ${gruppiUris.length} URI gruppi...`);
+  const denominazioni = {}; // uri → [{nome, inizio, fine}]
+
   try {
-    const rows = await runSPARQL(SPARQL_SENATO, query, { retries: 3 });
-    console.log(`      → Query nomi: ${rows.length} righe`);
+    const rows = await runSPARQL(SPARQL_SENATO, query1, { retries: 3 });
+    console.log(`      → Query 2-hop: ${rows.length} righe`);
     if (rows.length > 0) {
       console.log(`      Esempio: ${JSON.stringify(rows[0]).slice(0, 400)}`);
     }
     rows.forEach(r => {
       const uri = r.gruppoUri?.value;
-      const nome = r.label?.value || r.title?.value || r.name?.value || r.nome?.value;
-      if (uri && nome && !map[uri]) map[uri] = nome;
+      const nome = r.nome?.value;
+      const inizio = r.inizio?.value || null;
+      const fine = r.fine?.value || null;
+      if (!uri || !nome) return;
+      if (!denominazioni[uri]) denominazioni[uri] = [];
+      denominazioni[uri].push({ nome, inizio, fine });
     });
   } catch (e) {
-    console.log(`      ⚠ Query nomi fallita: ${e.message}`);
+    console.log(`      ⚠ Query 2-hop fallita: ${e.message}`);
   }
 
-  // Se non ne abbiamo trovato nessuno, diagnostichiamo il primo gruppo
+  // Per ogni gruppo, scegli la denominazione "migliore":
+  //   1. Una senza fine (corrente)
+  //   2. Quella con la data inizio più recente
+  //   3. La prima
+  const map = {};
+  for (const [uri, denoms] of Object.entries(denominazioni)) {
+    let best = denoms.find(d => !d.fine);
+    if (!best) {
+      best = [...denoms].sort((a, b) => (b.inizio || '').localeCompare(a.inizio || ''))[0];
+    }
+    if (best) map[uri] = best.nome;
+  }
+
+  // Se non abbiamo trovato nessun nome, diagnostichiamo
   if (Object.keys(map).length === 0 && gruppiUris.length > 0) {
-    console.log(`   ⚠ Nessun nome trovato — diagnostica del primo gruppo...`);
-    await diagnoseGruppo(gruppiUris[0]);
+    console.log(`   ⚠ Nessun nome trovato — diagnostica blank node denominazione...`);
+    await diagnoseDenominazione(gruppiUris[0]);
   }
   return map;
 }
@@ -225,7 +264,6 @@ async function fetchSenatoSenatori() {
   console.log('📥 Senato della Repubblica (SPARQL):');
   const items = [];
 
-  // Step A: lista senatori
   const queryLista = `
     PREFIX osr: <http://dati.senato.it/osr/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
@@ -248,7 +286,6 @@ async function fetchSenatoSenatori() {
     return items;
   }
 
-  // Step B: query gruppi (URI) — ora sappiamo che funziona con osr:gruppo
   console.log('   → Query gruppi (URI) per legislatura 19...');
   const queryGruppiUri = `
     PREFIX ocd: <http://dati.camera.it/ocd/>
@@ -266,9 +303,6 @@ async function fetchSenatoSenatori() {
   try {
     const grows = await runSPARQL(SPARQL_SENATO, queryGruppiUri, { retries: 3 });
     console.log(`      → ${grows.length} righe`);
-    if (grows.length > 0) {
-      console.log(`      Esempio: ${JSON.stringify(grows[0]).slice(0, 350)}`);
-    }
     grows.forEach(g => {
       const sen = g.senatore?.value;
       const uri = g.gruppoUri?.value;
@@ -283,7 +317,6 @@ async function fetchSenatoSenatori() {
 
   console.log(`   📊 ${Object.keys(gruppiUriBySenatore).length} senatori con URI gruppo, ${tutteUriGruppi.size} gruppi unici`);
 
-  // Step C: risolvi i nomi dei gruppi
   const nomiGruppi = await resolveGruppiNomi([...tutteUriGruppi]);
   console.log(`   📊 Nomi risolti: ${Object.keys(nomiGruppi).length} di ${tutteUriGruppi.size}`);
   if (Object.keys(nomiGruppi).length > 0) {
@@ -293,7 +326,7 @@ async function fetchSenatoSenatori() {
     });
   }
 
-  // Step D: assembla
+  // Assembla
   const bySen = {};
   rows.forEach(r => {
     const url = r.senatore?.value;
@@ -390,7 +423,6 @@ async function saveItems(items) {
     cameraOk = true;
   } catch (err) {
     console.error(`⚠ Camera fallita: ${err.message}`);
-    console.error(`   I dati Camera esistenti in Firestore restano validi.`);
   }
 
   try {
@@ -401,7 +433,7 @@ async function saveItems(items) {
   }
 
   if (camera.length === 0 && senato.length === 0) {
-    console.error('❌ Entrambe le fonti hanno fallito senza dati nuovi.');
+    console.error('❌ Entrambe le fonti hanno fallito.');
     process.exit(1);
   }
 
@@ -415,9 +447,7 @@ async function saveItems(items) {
 
   console.log('─'.repeat(50));
   if (!cameraOk) {
-    console.warn('⚠  Camera è fallita ma il run continua: i dati Camera precedenti in Firestore restano validi.');
-    console.warn('   Riprovare manualmente più tardi quando l\'endpoint SPARQL Camera sarà disponibile.');
+    console.warn('⚠  Camera fallita ma run continua: dati Camera precedenti restano validi.');
   }
   console.log('✅ Completato!');
-  // Exit 0 anche se Camera è fallita: i dati esistenti restano e Senato è OK
 })();
