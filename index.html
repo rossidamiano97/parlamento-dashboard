@@ -284,7 +284,7 @@
       renderSource();
     } catch(e) {
       console.error('Errore loadSource:', e);
-      document.getElementById('app').innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Errore caricamento dati.<br><small>${e.message}</small></p></div>`;
+      document.getElementById('app').innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Errore caricamento dati.<br><small>${escapeHtml(e.message)}</small></p></div>`;
     }
   }
 
@@ -346,23 +346,29 @@
       </div>`;
   }
 
+  function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function safeUrl(u) {
+    try { const x = new URL(String(u || ''), location.href); return (x.protocol === 'http:' || x.protocol === 'https:') ? x.href : '#'; }
+    catch (e) { return '#'; }
+  }
+
   function renderCard(item) {
     const parsedDate = parseItemDate(item);
     const dateStr = parsedDate ? parsedDate.toLocaleDateString('it-IT', {day:'numeric',month:'short',year:'numeric'}) : '';
     const tipo = item.tipo || 'Atto';
     const titolo = item.titolo || 'Atto parlamentare';
-    const link = item.link || '#';
+    const link = safeUrl(item.link);
     const stato = deriveStato(item);
-    const statoBadge = `<span class="stato-badge stato-${stato.replace(/\s+/g,'-')}">${stato}</span>`;
+    const statoBadge = `<span class="stato-badge stato-${escapeHtml(stato.replace(/\s+/g,'-'))}">${escapeHtml(stato)}</span>`;
     return `
     <div class="news-card" id="card-${item.id}">
       <div class="news-card-header">
-        <h3><a href="${link}" target="_blank" rel="noopener">${titolo}</a></h3>
+        <h3><a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(titolo)}</a></h3>
         <button class="btn-riassumi" id="btn-${item.id}" onclick="riassumi('${item.id}')" ${remainingToday()===0?'disabled':''}>✦ Riassumi</button>
       </div>
       <div class="news-meta">
         ${statoBadge}
-        <span class="badge ${badgeClass(tipo)}">${tipo}</span>
+        <span class="badge ${badgeClass(tipo)}">${escapeHtml(tipo)}</span>
         ${dateStr ? `<span class="news-date">📅 ${dateStr}</span>` : ''}
         ${item.fonte ? `<span class="news-source">· ${item.fonte === 'camera' ? 'Camera' : 'Senato'}</span>` : ''}
       </div>
@@ -411,7 +417,7 @@
     } catch(e) {
       btn.disabled = false;
       btn.textContent = '✦ Riassumi';
-      summaryDiv.innerHTML = `<div class="ai-summary" style="border-color:var(--red)">⚠️ Errore: ${e.message}</div>`;
+      summaryDiv.innerHTML = `<div class="ai-summary" style="border-color:var(--red)">⚠️ Errore: ${escapeHtml(e.message)}</div>`;
     }
   };
 

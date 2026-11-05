@@ -6,6 +6,9 @@ on:
     - cron: '0 6,18 * * *'
   workflow_dispatch: # Permette esecuzione manuale dalla schermata Actions
 
+permissions:
+  contents: read
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -19,7 +22,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Fetch and store parliamentary data
         run: node scripts/fetch-data.js
