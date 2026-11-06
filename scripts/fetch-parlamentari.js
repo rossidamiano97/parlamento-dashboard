@@ -8,7 +8,11 @@
 
 import admin from 'firebase-admin';
 
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+  console.error('❌ Variabile FIREBASE_SERVICE_ACCOUNT mancante: aggiungi il secret nelle impostazioni del repository.');
+  process.exit(1);
+}
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 

@@ -7,9 +7,17 @@ on:
     - cron: '0 6 * * 1'
   workflow_dispatch: # Permette esecuzione manuale dalla schermata Actions
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
