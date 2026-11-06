@@ -79,6 +79,34 @@
     .btn-back { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); border-radius: 8px; padding: 8px 16px; font-size: 0.82rem; cursor: pointer; margin-bottom: 24px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s; }
     .btn-back:hover { border-color: var(--accent); color: var(--text); }
     .section-title { font-family: 'Cinzel', serif; font-size: 1.1rem; color: var(--accent); margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+
+    /* ---- Usabilità, accessibilità e schermi piccoli ---- */
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .crumb { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; }
+    .crumb:hover { color: var(--accent); }
+    .filter-btn:hover, .filter-btn.active { background: #6b5420; }
+    .ai-limit-warn { color: var(--accent); }
+    .badge, .stato-badge { font-size: 0.72rem; }
+    .news-date, .news-source { font-size: 0.78rem; }
+    @media (max-width: 700px) {
+      header { padding: 14px 16px; }
+      header h1 { font-size: 1.2rem; }
+      #breadcrumb { padding: 4px 16px; }
+      #breadcrumb .crumb, #breadcrumb a { min-height: 44px; display: inline-flex; align-items: center; }
+      main { padding: 20px 16px; }
+      .level-card { padding: 24px 20px; }
+      .filter-btn { min-height: 40px; padding: 8px 14px; font-size: 0.85rem; }
+      .date-input { min-height: 40px; font-size: 1rem; }
+      .btn-back { min-height: 44px; display: inline-flex; align-items: center; }
+      .btn-riassumi { min-height: 40px; padding: 8px 14px; font-size: 0.8rem; }
+      .news-card { padding: 16px; }
+      .news-card-header { flex-direction: column; align-items: stretch; }
+      #count-badge { margin-left: 0; width: 100%; }
+      #search-bar { min-height: 44px; font-size: 1rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation-duration: 1.6s !important; }
+    }
   </style>
 </head>
 <body>
@@ -88,9 +116,21 @@
   <div id="last-update">—</div>
 </header>
 
-<div id="breadcrumb"><span onclick="goHome()">🏠 Home</span></div>
+<div id="breadcrumb"><button type="button" class="crumb" onclick="goHome()">🏠 Home</button></div>
 
-<main><div id="app"></div></main>
+<main><div id="app"><div class="empty-state" id="boot-state" role="status"><div class="spinner"></div><p style="margin-top:16px">Caricamento…</p></div></div></main>
+
+<script>
+  /* Se i moduli esterni non si caricano, mostra un messaggio invece di una pagina vuota */
+  setTimeout(function () {
+    var b = document.getElementById('boot-state');
+    if (b) {
+      b.setAttribute('role', 'alert');
+      b.innerHTML = '<div class="icon">⚠️</div><p>Impossibile caricare la pagina.<br><small>Controlla la connessione e riprova.</small></p><button type="button" class="btn-back" style="margin:16px auto 0" onclick="location.reload()">Ricarica</button>';
+    }
+  }, 8000);
+</script>
+
 
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js';
@@ -223,18 +263,18 @@
   }
 
   function renderHome() {
-    document.getElementById('breadcrumb').innerHTML = `<span onclick="goHome()">🏠 Home</span>`;
+    document.getElementById('breadcrumb').innerHTML = `<button type="button" class="crumb" onclick="goHome()">🏠 Home</button>`;
     document.getElementById('app').innerHTML = `
       <div class="level-grid">
-        <div class="level-card" onclick="selectSource('camera')">
+        <div class="level-card" role="button" tabindex="0" onclick="selectSource('camera')">
           <div class="icon">🏛</div><h2>Camera dei Deputati</h2>
           <p>Atti, sedute, votazioni e agenda della Camera</p>
         </div>
-        <div class="level-card" onclick="selectSource('senato')">
+        <div class="level-card" role="button" tabindex="0" onclick="selectSource('senato')">
           <div class="icon">⚖️</div><h2>Senato della Repubblica</h2>
           <p>Disegni di legge, commissioni e resoconti del Senato</p>
         </div>
-        <div class="level-card" onclick="window.location.href='presenze.html'">
+        <div class="level-card" role="button" tabindex="0" onclick="window.location.href='presenze.html'">
           <div class="icon">👥</div><h2>Parlamentari</h2>
           <p>Anagrafica, gruppi e presenze dei parlamentari</p>
         </div>
@@ -245,8 +285,8 @@
     currentSource = source;
     activeType = 'tutti'; activeStato = 'tutti'; activeDateFilter = 'tutti'; dateFrom = ''; dateTo = '';
     const label = source === 'camera' ? '🏛 Camera dei Deputati' : '⚖️ Senato della Repubblica';
-    document.getElementById('breadcrumb').innerHTML = `<span onclick="goHome()">🏠 Home</span><span class="sep">›</span><span>${label}</span>`;
-    document.getElementById('app').innerHTML = `<div class="empty-state"><div class="spinner"></div><p style="margin-top:16px">Caricamento dati...</p></div>`;
+    document.getElementById('breadcrumb').innerHTML = `<button type="button" class="crumb" onclick="goHome()">🏠 Home</button><span class="sep">›</span><span>${label}</span>`;
+    document.getElementById('app').innerHTML = `<div class="empty-state" role="status"><div class="spinner"></div><p style="margin-top:16px">Caricamento dati...</p></div>`;
     await loadSource(source);
   }
 
@@ -284,7 +324,7 @@
       renderSource();
     } catch(e) {
       console.error('Errore loadSource:', e);
-      document.getElementById('app').innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Errore caricamento dati.<br><small>${e.message}</small></p></div>`;
+      document.getElementById('app').innerHTML = `<div class="empty-state" role="alert"><div class="icon">⚠️</div><p>Non è stato possibile caricare i dati.<br><small>${e.message}</small></p><button type="button" class="btn-back" style="margin:16px auto 0" onclick="selectSource(currentSource)">Riprova</button></div>`;
     }
   }
 
@@ -314,28 +354,28 @@
       <div id="filters">
         <div class="filter-group">
           <span class="filter-label">Stato:</span>
-          ${stati.map(s => `<button class="filter-btn ${s===activeStato?'active':''}" onclick="setStato('${s}')">${statoLabels[s]}</button>`).join('')}
+          ${stati.map(s => `<button class="filter-btn ${s===activeStato?'active':''}" aria-pressed="${s===activeStato?'true':'false'}" onclick="setStato('${s}')">${statoLabels[s]}</button>`).join('')}
         </div>
         <div class="filter-divider"></div>
         <div class="filter-group">
           <span class="filter-label">Tipo:</span>
-          ${types.map(t => `<button class="filter-btn ${t===activeType?'active':''}" onclick="setType('${t}')">${t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
+          ${types.map(t => `<button class="filter-btn ${t===activeType?'active':''}" aria-pressed="${t===activeType?'true':'false'}" onclick="setType('${t}')">${t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
         </div>
         <div class="filter-divider"></div>
         <div class="filter-group">
           <span class="filter-label">Periodo:</span>
           ${['oggi','7','30','90','tutti'].map(v => {
             const labels = {oggi:'Oggi','7':'7 giorni','30':'30 giorni','90':'90 giorni',tutti:'Tutto'};
-            return `<button class="filter-btn ${v===activeDateFilter&&activeDateFilter!=='custom'?'active':''}" onclick="setDateFilter('${v}')">${labels[v]}</button>`;
+            return `<button class="filter-btn ${v===activeDateFilter&&activeDateFilter!=='custom'?'active':''}" aria-pressed="${v===activeDateFilter&&activeDateFilter!=='custom'?'true':'false'}" onclick="setDateFilter('${v}')">${labels[v]}</button>`;
           }).join('')}
-          <button class="filter-btn ${activeDateFilter==='custom'?'active':''}" onclick="setDateFilter('custom')">Personalizzato</button>
+          <button class="filter-btn ${activeDateFilter==='custom'?'active':''}" aria-pressed="${activeDateFilter==='custom'?'true':'false'}" onclick="setDateFilter('custom')">Personalizzato</button>
         </div>
         ${activeDateFilter==='custom' ? `
         <div class="filter-group">
           <span class="filter-label">Da:</span>
-          <input class="date-input" type="date" id="df-from" value="${dateFrom}" onchange="setCustomDate()">
+          <input class="date-input" type="date" id="df-from" aria-label="Data iniziale" value="${dateFrom}" onchange="setCustomDate()">
           <span class="filter-label">A:</span>
-          <input class="date-input" type="date" id="df-to" value="${dateTo}" onchange="setCustomDate()">
+          <input class="date-input" type="date" id="df-to" aria-label="Data finale" value="${dateTo}" onchange="setCustomDate()">
         </div>` : ''}
         <span id="count-badge">${filtered.length} di ${allItems.length} elementi</span>
       </div>
@@ -440,6 +480,10 @@
   };
   window.selectSource = selectSource;
   window.goHome = function() { renderHome(); };
+  // Le schede cliccabili si attivano anche da tastiera (Invio o Spazio)
+  document.addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('[role=button]')) { e.preventDefault(); e.target.click(); }
+  });
 
   renderHome();
 </script>
